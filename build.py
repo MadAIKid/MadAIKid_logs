@@ -382,6 +382,8 @@ def build_timeline(built: str) -> str | None:
 def load_posts() -> list[dict]:
     posts = []
     for f in sorted(POSTS.glob("*.md")):
+        if f.name.startswith("_"):       # _TEMPLATE.md 等非日志文件
+            continue
         meta, body = parse_front(f.read_text(encoding="utf-8"))
         slug = meta.get("slug") or f.stem
         meta.setdefault("slug", slug)
@@ -429,30 +431,36 @@ def main() -> None:
     print(f"✓ {len(posts)} 篇日志通过校验")
 
     LOGS.mkdir(exist_ok=True)
-    written = []
+    outputs: list[tuple[Path, str]] = []
     for i, p in enumerate(posts):
         prev = posts[i - 1] if i > 0 else None
         nxt = posts[i + 1] if i + 1 < len(posts) else None
-        out = LOGS / f'{p["slug"]}.html'
-        written.append(out)
-        if not check:
-            out.write_text(build_log_page(p, prev, nxt, built), encoding="utf-8")
-
-    idx = build_index(posts, built)
-    written.append(ROOT / "index.html")
-    if not check:
-        (ROOT / "index.html").write_text(idx, encoding="utf-8")
-
+        outputs.append((LOGS / f'{p["slug"]}.html', build_log_page(p, prev, nxt, built)))
+    outputs.append((ROOT / "index.html", build_index(posts, built)))
     tl = build_timeline(built)
     if tl:
-        written.append(ROOT / "timeline.html")
-        if not check:
-            (ROOT / "timeline.html").write_text(tl, encoding="utf-8")
+        outputs.append((ROOT / "timeline.html", tl))
+
+    # 内部链接校验（基于内存内容，--check 模式同样有效）
+    planned = {path.resolve() for path, _ in outputs}
+    broken = []
+    for path, content in outputs:
+        for href in re.findall(r'href="([^"#]+)"', content):
+            if href.startswith(("http://", "https://", "mailto:", "data:")):
+                continue
+            target = (path.parent / href).resolve()
+            if target not in planned and not target.exists():
+                broken.append(f"{path.relative_to(ROOT)} -> {href}")
+    if broken:
+        print("\n".join("✗ 断链 " + b for b in broken), file=sys.stderr)
+        sys.exit(f"内部链接校验失败（{len(broken)} 处）")
 
     if check:
-        print("✓ 校验完成（--check 未写文件）")
+        print(f"✓ 校验完成：{len(posts)} 篇日志、{len(outputs)} 个页面、0 断链（--check 未写文件）")
     else:
-        print(f"✓ 生成 {len(written)} 个 HTML 文件")
+        for path, content in outputs:
+            path.write_text(content, encoding="utf-8")
+        print(f"✓ 生成 {len(outputs)} 个 HTML 文件（内部链接 0 断链）")
         for p in posts:
             print(f'   logs/{p["slug"]}.html  ({p.get("date_start")}  {p.get("status")})')
 
