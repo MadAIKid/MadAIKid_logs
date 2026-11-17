@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TQR-JEV 资产准备：模型能跑、增殖能出样本，但 1k 与三原语头没做 · MadAIKid · 实验日志</title>
+<meta name="description" content="TQR-JEV 要不要继续花 GPU 钱，取决于冻结 9B 能不能跑、数学数据能不能增殖成带标签的节点样本 —— 本轮把模型（19.33 GB）、数据（859,494 行）、代码落进跨实例共享存储，9B 在 4090 上实测 18.8 GB 显存 / 23.6 tok/s，增殖脚本修到 v3 后 3 条样本 accept 100%；但 1k 放量、JEV 三原语头、RR-tree 全部未做。">
+<meta name="generator" content="blog/build.py">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<header class="site-header"><div class="inner">
+<a class="brand" href="../index.html">MadAIKid<span class="dot">·</span>logs</a>
+<nav class="site-nav">
+<a href="../index.html">实验日志</a>
+<a href="../timeline.html">时间索引</a>
+<a href="https://github.com/MadAIKid/MadAIKid_logs">GitHub</a>
+</nav>
+</div></header>
+<main class="wrap">
+<div class="article-head">
+<div class="crumb"><a href="../index.html">实验日志</a> / 03-tqr-jev-assets</div>
+<h1>TQR-JEV 资产准备：模型能跑、增殖能出样本，但 1k 与三原语头没做</h1>
+<p class="subtitle">阶段 0 · 9B 在 4090 上 18.8 GB / 23.6 tok/s · 增殖 v3 小样 accept 100%</p>
+<dl class="spec"><div class="item"><dt>编号</dt><dd>TQR</dd></div><div class="item"><dt>日期</dt><dd>2026-10-05 → 2026-10-06</dd></div><div class="item"><dt>状态</dt><dd><span class="badge status-部分完成">部分完成</span></dd></div><div class="item"><dt>判定</dt><dd>资产就绪（9B 19.33 GB / Numina 859,494 行），v3 仅 3 条样本，1k 与 JEV 头未做</dd></div><div class="item"><dt>标签</dt><dd>模型下载 / 数据构建 / 校准 / 运维</dd></div><div class="item"><dt>硬件</dt><dd>AutoDL RTX 4090 24 GB（westb 验证机）· AutoDL 无卡实例 westc（下载机）· 本地 Mac（零 GPU）</dd></div><div class="item"><dt>模型</dt><dd>Qwen3.5-9B-Base 19.33 GB · Qwen3-8B 16 GB</dd></div><div class="item"><dt>数据</dt><dd>NuminaMath-CoT 859,494 行 / 1.23 GB · PRM800K 488 MB · rlcd-lite 自带 BoolQ/MMLU/Banking77/CLINC150</dd></div><div class="item"><dt>源文档</dt><dd>PROGRESS.md · DATA-AUGMENT-REF.md · GPU-VALIDATION.md · RLCD-DATASETS.md · EXPERIMENT_PLAN.md · COLD-START.md · PROGRESS-SUMMARY.md · INDEX.md · SESSION-2026-10-06.md</dd></div></dl>
+</div>
+<article class="prose">
+<blockquote>
+<p><strong>一句话</strong>：TQR-JEV 要不要继续花 GPU 钱，取决于冻结 9B 能不能跑、数学数据能不能增殖成带标签的节点样本 —— 本轮把模型（19.33 GB）、数据（859,494 行）、代码落进跨实例共享存储，9B 在 4090 上实测 18.8 GB 显存 / 23.6 tok/s，增殖脚本修到 v3 后 3 条样本 accept 100%；但 1k 放量、JEV 三原语头、RR-tree 全部未做。</p>
+</blockquote>
+<h2 id="摘要">0. 摘要</h2>
+<p>本轮是 TQR 宏观注意力实验的<strong>阶段 0：资产准备</strong>，不做训练、不跑打分。做完的四件事：模型/数据/代码进 <code>autodl-fs</code>（跨实例复用，17 G / 200 G）；把 DeepSeek Flash 增殖脚本从 v1 修到 v3（三轮修正，均有实测证据）；在 RTX 4090 24 GB 上验证 Qwen3.5-9B-Base 能加载能生成；核验 RLCD 校准头的数据集选型。</p>
+<p>结论是「资产就绪、模型可跑、增殖脚本小样可用」，但<strong>证据强度只够支撑下一步动工，不够支撑任何效果结论</strong>：增殖只验了 3 条，1k 未跑；JEV 三原语头、RR-tree 生成、E1 LLM-judge 全部未实现。账户资金是硬约束（紧张），放量前必须先对账。</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>实验</th>
+<th>问题</th>
+<th>结果</th>
+<th>判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TQR-A0a</td>
+<td>模型/数据/代码能否一次落盘、跨机复用？</td>
+<td>模型/数据/代码进 fs，用量 17 G / 200 G；Qwen3-8B 14 文件 16 G</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>TQR-A0b</td>
+<td>9B 权重与 1k 级数据能否下载并真校验？</td>
+<td>9B 19.33 GB（4 分片 Content-Length 全对）；Numina 1.23 GB / 859,494 行</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>TQR-A0c</td>
+<td>9B-Base 能否在 24 GB 卡上加载并生成？</td>
+<td>显存 18.8 GB（峰值 18.9）、加载约 2 分钟、23.6 tok/s</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>TQR-A0d</td>
+<td>增殖脚本能否稳定产出 B/C 变体？</td>
+<td>3 条 → baseline/perturb/branch 各 3、failed 0、accept 100%</td>
+<td>✅（n=3）</td>
+</tr>
+<tr>
+<td>TQR-A0e</td>
+<td>校准头需要什么数据、公开数据够不够？</td>
+<td>步骤级真软标签存在（426,449 行、33.5% 非二值）；硬 0/1 也已够</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>TQR-A0f</td>
+<td>1k 增殖 / JEV 头 / RR-tree</td>
+<td>未跑 / 未实现 / 未生成</td>
+<td>❌</td>
+</tr>
+</tbody>
+</table>
+<h2 id="问题与假设">1. 问题与假设</h2>
+<p>这条线要回答的<strong>决策问题</strong>不是「TQR 分数怎么算」，而是：<strong>值不值得为 TQR-JEV 继续租 GPU 做可学习的校准读数头？</strong> 该问题被拆成 S0–S6 与 G0–G5 六道 Gate，主 go/no-go 是 E3（同预算下 TQR 引导搜索是否打赢随机重排序）。阶段 0 只负责把「能开工」这件事证明掉 —— 如果 9B 在 24G 卡上跑不动、或者数学 CoT 增殖不出带标签的节点样本，后面所有 Gate 都是空谈。</p>
+<p>预注册式判据（本轮自定，只针对资产层）：</p>
+<ul>
+<li><strong>A0-1 可复用</strong>：资产放在跨实例共享存储，另一台机器开机即可读；脚本不得硬编码挂载路径。</li>
+<li><strong>A0-2 可加载</strong>：9B-Base bf16 在 24 GB 卡上显存占用 &lt; 24 GB 且能生成，不依赖量化。</li>
+<li><strong>A0-3 可增殖</strong>：LLM 增殖产出的 perturb 必须是真错误步（不是等价改写）、错误步落在中间位置、分支候选带标签，小样本 accept 率 100%。</li>
+<li><strong>A0-4 判据校准</strong>：下载校验以实际字节为准；RLCD 数据选型必须带行数/字段/体积的实时核验，不留「听说有」的条目。</li>
+</ul>
+<p>为什么先做资产而不是先做方法：JEV 本身没有官方论文与权重，分支掩码与读出结构是逆向推断；TQR 公式在真相源里仍是占位符（<code>_alpha/_beta_r/_beta_n/_delta</code> 直接 <code>return 1.0/0.0</code>）。在这种前提下，先证明「模型能跑 + 数据能造 + 参考实现能拿」是唯一不浪费 GPU 钱的顺序。</p>
+<h2 id="实验设置">2. 实验设置</h2>
+<h3 id="环境">2.1 环境</h3>
+<p>本轮跨三台机器，能力各不相同：</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>机器</th>
+<th>角色</th>
+<th>关键事实</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>本地 Mac</td>
+<td>文档与零算力工具</td>
+<td>单次命令约 200–300 字符上限，<code>printf</code>/长 heredoc 易卡死 300s；<code>/tmp</code> 与 <code>~/.cache</code> 会被重置；后台进程活不过一次工具调用</td>
+</tr>
+<tr>
+<td>AutoDL westc（无卡模式）</td>
+<td>下载机</td>
+<td><code>/dev/nvidia*</code> 不存在、<code>nvidia-smi</code> 无输出 → 只能下载/装包；<code>uv</code> 未装；非登录 shell 无 <code>python3</code>（miniconda 在 <code>/root/miniconda3</code>）</td>
+</tr>
+<tr>
+<td>AutoDL westb（RTX 4090 24 GB）</td>
+<td>GPU 验证机</td>
+<td>系统盘 30 G、数据盘 <code>/root/autodl-tmp</code> 50 G；镜像自带 torch 2.8.0+cu128，无 transformers/accelerate</td>
+</tr>
+</tbody>
+</table>
+<p>初始候选其实是「48G vGPU」（实测 FP32 82.58 / FP16-T 165.2 TFLOPS，与 RTX 4090 官方数字吻合，属 AD102 级而非 A100），但真正跑 GPU 验证的是 westb 的 <strong>RTX 4090 24 GB</strong>。候选 48G 与实测 24G 的差异原因<strong>未记录</strong>（存疑），本轮只按实测机报数。</p>
+<p>环境搭建实测：<code>pip install -i https://pypi.tuna.tsinghua.edu.cn/simple transformers accelerate safetensors</code>，装上 <strong>transformers 5.18.0 + accelerate 1.15.0 + tokenizers 0.23.2</strong>；transformers 5.18.0 原生支持 <code>qwen3_5</code> 架构，无需 <code>trust_remote_code</code>。</p>
+<h3 id="模型与数据">2.2 模型与数据</h3>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>资产</th>
+<th>位置</th>
+<th>规模</th>
+<th>校验方式与结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen3.5-9B-Base</td>
+<td><code>autodl-fs/models/Qwen3.5-9B-Base/</code></td>
+<td><strong>19.33 GB</strong>，4 分片 + tokenizer + 视觉预处理器</td>
+<td>4 个分片逐个与 mirror <code>Content-Length</code> 一致；单分片字节数未记录</td>
+</tr>
+<tr>
+<td>Qwen3-8B（备用骨干）</td>
+<td><code>autodl-fs/models/Qwen3-8B/</code></td>
+<td>16 GB，14 个文件</td>
+<td><code>14/14</code> 文件与 mirror <code>Content-Length</code> 逐项一致</td>
+</tr>
+<tr>
+<td>NuminaMath-CoT</td>
+<td><code>autodl-fs/datasets/numina-cot/</code></td>
+<td><strong>1.23 GB</strong>，train 5 分片，<strong>859,494 行</strong>（官方 ~860k）</td>
+<td>5 个分片解析后合计行数对齐官方量级；列 <code>source / problem / solution / messages</code>，<code>solution</code> 为分步 CoT（空行分段）</td>
+</tr>
+<tr>
+<td>PRM800K（原始）</td>
+<td><code>autodl-fs/datasets/prm800k-raw/</code></td>
+<td>488 MB</td>
+<td><code>6/6</code> 文件 md5 与本地 LFS 源逐项一致（<code>b855388b…</code>/<code>cf130db1…</code>/<code>16af793c…</code>/<code>7bf0558d…</code>/<code>d06a3ab6…</code>/<code>ad0c5428…</code>）</td>
+</tr>
+<tr>
+<td>Stellan 代码副本</td>
+<td><code>autodl-fs/code/Stellan/</code></td>
+<td>2.2 MB，3 个模块</td>
+<td><code>EXPERIMENT_PLAN.md</code> md5 = <code>8437b58b9b7961d7b968652baad5c72e</code>，与本地一致</td>
+</tr>
+<tr>
+<td>Qwen3.8-Flash-Next（仅 mmproj）</td>
+<td><code>autodl-fs/models/Qwen3.8-Flash-Next-GGUF/</code></td>
+<td>907,543,008 B</td>
+<td>单文件下载完成；主权重档位未下载（用户中止）</td>
+</tr>
+<tr>
+<td>rlcd-lite（参考实现）</td>
+<td><code>autodl-fs/code/rlcd-lite/</code></td>
+<td>1.9 MB / 29 个 <code>.py</code></td>
+<td>commit <code>b0f981fab5e6ce53dd089eae71b141ab1099c31a</code>（2026-09-18），<code>git status</code> 干净（<code>--depth 1</code>）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>下载与校验的真实口径</strong>（这是本轮最有复用价值的部分）：</p>
+<ol type="1">
+<li><strong>以 mirror 实际 <code>Content-Length</code> 校验，不信 HF API 的 <code>size</code> 字段</strong>：同一分片 API 报 <code>3960337888</code>，mirror 实际 <code>3959604768</code>，差 733 KB；API 元数据会过期。</li>
+<li><strong><code>hf download</code> 必须加 <code>HF_HUB_DISABLE_XET=1</code></strong>，否则 xet 后端直接崩（<code>TypeError: process() takes no keyword arguments</code>）。</li>
+<li>hf-mirror 的限速是<strong>按字节段</strong>而非按文件：同一文件 <code>Range: 0-20000000</code> → 31 KB/s，<code>Range: 500000000-520000000</code> → 3.9 MB/s；用 <code>curl -C -</code> 越过慢段后续到 3.1 GB 时实测 8.6 MB/s（<code>898MB→3102MB/250s</code>）。</li>
+<li>部分 repo 在 mirror 上要鉴权：<code>hendrycks/competition_math</code> 403 → 换 <code>EleutherAI/hendrycks_math</code>；<code>openai/PRM800K</code> / <code>RLHFlow/PRM800K</code> 401 → 改从 GitHub LFS 取真数据，经本地中继传输。</li>
+</ol>
+<h3 id="方法">2.3 方法</h3>
+<p><strong>增殖的变体定义</strong>（<code>DATA-AUGMENT-REF.md</code> 的便携规格）：每条 Numina 题目产出 3 个变体 —— <code>baseline</code>（原 CoT 分步，全部 <code>useful</code>）、<code>perturb</code>（中间某一步替换成似是而非的错误步，该步 <code>useless</code>）、<code>branch</code>（某步给 3 个候选下一跳，1 对 + 2 错，带标签）。默认 3x。</p>
+<p><strong>v3 的四个硬校验</strong>（全部通过才接受，最多重试 3 次）：</p>
+<ul>
+<li><code>index ∈ [1, len-2]</code>：禁止改末步，否则只学到「结论错了」；</li>
+<li><code>norm(wrong) != norm(orig)</code>：不允许等价改写；</li>
+<li>长度比 <code>|len(a)-len(b)| / max(1,len(a)) &lt;= 0.50</code>；</li>
+<li>字符级相似度 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mrow><mi mathvariant="normal">s</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">m</mi><mn mathvariant="normal">3</mn></mrow><mo stretchy="false" form="prefix">(</mo><mi>a</mi><mo>,</mo><mi>b</mi><mo stretchy="false" form="postfix">)</mo><mo>=</mo><mstyle displaystyle="true"><mfrac><mrow><mo stretchy="false" form="prefix">|</mo><mn>3</mn><mtext mathvariant="normal">-</mtext><mi>g</mi><mi>r</mi><mi>a</mi><mi>m</mi><mo stretchy="false" form="prefix">(</mo><mi>A</mi><mo stretchy="false" form="postfix">)</mo><mo>∩</mo><mn>3</mn><mtext mathvariant="normal">-</mtext><mi>g</mi><mi>r</mi><mi>a</mi><mi>m</mi><mo stretchy="false" form="prefix">(</mo><mi>B</mi><mo stretchy="false" form="postfix">)</mo><mo stretchy="false" form="prefix">|</mo></mrow><mrow><mo stretchy="false" form="prefix">|</mo><mi>A</mi><mo>∪</mo><mi>B</mi><mo stretchy="false" form="prefix">|</mo></mrow></mfrac></mstyle><mo>≥</mo><mn>0.30</mn></mrow><annotation encoding="application/x-tex">\mathrm{sim3}(a,b) = \dfrac{|3\text{-}gram(A) \cap 3\text{-}gram(B)|}{|A \cup B|} \ge 0.30</annotation></semantics></math>（先 <code>norm()</code> 去 LaTeX 标记与空白）。</li>
+</ul>
+<p>其余实现点：<code>re.split(r"\n\s*\n", solution)</code> 分步、上限 20 步、<code>len(steps) &lt; 3</code> 直接丢弃；<strong>覆盖写入</strong>（<code>open(out,"w")</code>）而非追加，每行 <code>flush()</code>；蓄水池抽样 <code>--sample N --seed 42</code> 可复现。API 走 <code>deepseek-flash</code>（由 <code>/v1/models</code> 查得，另有 <code>deepseek-v4-pro</code>）。</p>
+<p><strong>GPU smoke test</strong>：<code>AutoTokenizer</code> + <code>AutoModelForImageTextToText.from_pretrained(..., dtype=torch.bfloat16, device_map={"": 0})</code>；prompt 为纯文本 completion 格式 <code>Problem: %s\n\nSolution:\n</code>，<code>max_new_tokens=200</code>、<code>do_sample=False</code>（greedy），单条、无批处理。</p>
+<p><strong>RLCD 选型核验方式</strong>：所有 id / 行数 / 字段 / 体积均来自实时核验 —— <code>hf-mirror.com/api/datasets</code> + <code>datasets-server.huggingface.co</code>（info/size/rows）+ 真实下载样本解析 schema（核验后清理，未在仓库留存数据）+ GitHub / Zenodo API；401 需用 mirror 搜索索引交叉确认（hf-mirror 用 401 同时表示「不存在」和「gated」）。</p>
+<h2 id="结果">3. 结果</h2>
+<h3 id="主结果">3.1 主结果</h3>
+<table>
+<colgroup>
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+</colgroup>
+<thead>
+<tr>
+<th>配置</th>
+<th>指标</th>
+<th>数值</th>
+<th>95% CI</th>
+<th>判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>首批资产落盘</td>
+<td>fs 用量 / 模型文件一致性</td>
+<td>17 G / 200 G；14/14 一致；PRM800K md5 6/6</td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>Qwen3.5-9B-Base 下载</td>
+<td>字节数 / 分片校验</td>
+<td>19.33 GB；4/4 <code>Content-Length</code> 一致</td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>NuminaMath-CoT 下载</td>
+<td>行数 / 体积</td>
+<td>859,494 行；1.23 GB</td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>9B bf16 加载</td>
+<td>显存占用 / 峰值 / 加载耗时</td>
+<td>18.8 GB / 18.9 GB / 约 2 分钟</td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>9B 生成</td>
+<td>吞吐</td>
+<td>23.6 tok/s（单条、greedy、无批处理）</td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>增殖 v3（3 条样本）</td>
+<td>变体数 / 失败数 / accept 率</td>
+<td>baseline 3 / perturb 3 / branch 3 / failed 0；100%</td>
+<td>未记录（n=3）</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>perturb 错误步位置</td>
+<td>落在 <code>[1, len-2]</code> 的比例</td>
+<td>3/3</td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>RLCD 数据选型</td>
+<td>步骤级真软标签可用性</td>
+<td>ReST-MCTS 426,449 行、33.5% 非二值；AlphaMath 309,327 步 × P/Q</td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>rlcd-lite 就位</td>
+<td>体积 / 文件数 / 工作区状态</td>
+<td>1.9 MB / 29 个 <code>.py</code> / 干净</td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>1k 增殖 / JEV 头 / RR-tree</td>
+<td>—</td>
+<td>未跑 / 未实现 / 未生成</td>
+<td>—</td>
+<td>❌</td>
+</tr>
+</tbody>
+</table>
+<p>v3 的三条 perturb 人工抽查（这是唯一的质量证据，n=3）：<code>(y+z)^2 → y^2 + z^2</code>（漏交叉项，教科书级代数错误）、<code>(1+1)(2+1)(1+1)=12 → (1+1)+(2+1)+(1+1)=7</code>（乘号改加号）、结论 <code>1,2,4 → 1,3</code>（条件判断错误）。branch 的错误候选也多为真推理错误（符号错、模运算误用、LCM 算错）。</p>
+<h3 id="对照与消融">3.2 对照与消融</h3>
+<p>本轮没有统计意义上的对照组，但有三组「判据对照」，恰好证明指标没被高估：</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>对照</th>
+<th>设置</th>
+<th>结果</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>下载校验口径</td>
+<td>HF API <code>size</code> vs mirror 实际 <code>Content-Length</code></td>
+<td>API 3,960,337,888 vs 实际 3,959,604,768（差 733 KB）</td>
+<td>证明「按 API 字段校验」会给出假一致/假不一致</td>
+</tr>
+<tr>
+<td>网络线路</td>
+<td><code>network_turbo</code> vs <code>hf-mirror</code> 直连</td>
+<td>turbo 后 GitHub/HF 仍 HTTP 000（超时 10s）；mirror 200</td>
+<td>证明下载成功不是「加速器生效」的错觉</td>
+</tr>
+<tr>
+<td>相似度判据</td>
+<td>v2 词级重叠 vs v3 字符 3-gram</td>
+<td>v2 把同段小幅改写全部拒绝（日志 <code>orig_norm=477 / wrong_norm=429 / ratio=0.10</code>），perturb 全灭</td>
+<td>证明 accept 率由判据决定，不是由模型能力决定</td>
+</tr>
+</tbody>
+</table>
+<p>RLCD 侧另有 rlcd-lite 自带的 7 条小模型实测（见 <code>RLCD-DATASETS.md</code> §8.3），本轮择要采信 4 条作为设计先验：</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>#</th>
+<th>结论</th>
+<th>对本实验的含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>只用 Brier 是陷阱，奖励必须 = 正确性 + Brier（RLCR）</td>
+<td>binary reward 的 ECE <strong>0.35</strong> vs RLCR <strong>0.08</strong>（acc 0.76/0.78 持平）</td>
+</tr>
+<tr>
+<td>2</td>
+<td>校准 ≠ 有信息：RLCR 置信度 reliability 0.007 但 resolution <strong>0.000</strong>，AURC 0.21 远差于温度缩放 softmax 的 0.07</td>
+<td>判别信息在 choice 分布里，Score 头要读分布</td>
+</tr>
+<tr>
+<td>3</td>
+<td>RL 会把原始 softmax 压塌：裸概率 ECE <strong>0.21–0.23</strong>（基座 0.18），一个拟合温度可修到 0.10–0.13</td>
+<td>E2 必须把「温度缩放后」与「裸概率」分开报</td>
+</tr>
+<tr>
+<td>4</td>
+<td>选项顺序翻转约一半答案：BoolQ <strong>52%</strong> / MMLU <strong>46%</strong>，TV 距离 ~0.35</td>
+<td>E0 现有「翻转率 ≤ 15%」判据严重过于乐观，应改置换平均</td>
+</tr>
+</tbody>
+</table>
+<h3 id="反直觉-负结果">3.3 反直觉 / 负结果</h3>
+<ol type="1">
+<li><strong>「软标签最稀缺」的直觉是错的。</strong> RLCD（RL for Calibrated Decisions）的奖励是 proper scoring rule <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>r</mi><mi>e</mi><mi>w</mi><mi>a</mi><mi>r</mi><mi>d</mi><mo>=</mo><mn>𝟙</mn><mo stretchy="false" form="prefix">[</mo><mi>c</mi><mi>o</mi><mi>r</mi><mi>r</mi><mi>e</mi><mi>c</mi><mi>t</mi><mo stretchy="false" form="postfix">]</mo><mo>−</mo><mo stretchy="false" form="prefix">(</mo><mi>c</mi><mi>o</mi><mi>n</mi><mi>f</mi><mi>i</mi><mi>d</mi><mi>e</mi><mi>n</mi><mi>c</mi><mi>e</mi><mo>−</mo><mn>𝟙</mn><mo stretchy="false" form="prefix">[</mo><mi>c</mi><mi>o</mi><mi>r</mi><mi>r</mi><mi>e</mi><mi>c</mi><mi>t</mi><mo stretchy="false" form="postfix">]</mo><msup><mo stretchy="false" form="postfix">)</mo><mn>2</mn></msup></mrow><annotation encoding="application/x-tex">reward = \mathbb{1}[correct] - (confidence - \mathbb{1}[correct])^2</annotation></semantics></math>，硬 0/1 就够 —— 预训练只需「答案可自动判对」+「难度覆盖带」。真正的敌人是全对/全错样本：OpenR1-Math-220k 抽样 100 行只有 <strong>17%</strong> 对错混合，k=2 占 <strong>94%</strong>（pass rate 只能取 {0, 0.5, 1}）。步骤级真软标签确实存在（此前「公开数据只有硬标签」的判断错误），但它是「可以做，不是必须做」。</li>
+<li><strong>词级相似度在数学文本上失效。</strong> <code>a^2+y^2=c^2</code> 这类内容两边无法按空格分词匹配，词重叠恒 0 → v2 的 perturb <strong>100% 被误杀</strong>。教训写死在规格里：对数学/LaTeX 必须用字符级相似度。</li>
+<li><strong>「远端 GitHub 不可达」被推翻。</strong> 10-05 记录的「必须走本地中继」在 10-06 20:07 实测作废：<code>curl -I https://github.com</code> → HTTP/2 200，<code>git clone</code> 直接成功（<code>COLD-START.md</code> 与旧 PROGRESS 记载已过期）。</li>
+<li><strong>「<code>network_turbo</code> 能加速 HF」被推翻。</strong> <code>source /etc/network_turbo</code> 后 <code>github.com</code> / <code>huggingface.co</code> 仍返回 HTTP 000；当前可行线路只剩 hf-mirror。<code>COLD-START.md</code> §4 的「真 HF 7.7–21 MB/s」在本次实例上失效。</li>
+<li><strong>位置判据比预想的更脆。</strong> E0 线原本的「top-1 翻转率 ≤ 15%」在 rlcd-lite 的 BoolQ/MMLU 实测下被打穿（52%/46%）；同时顺序一致性 rho 才是有效判据（注入 bias=0.20 时翻转率 0.075 仍合格、rho 已跌到 0.8582）—— 跨线结论，但直接影响本线 Choice 头的评测设计。</li>
+<li><strong>小模型不能替 9B 验证 Choice 头。</strong> 0.5B 在 77 路 / 151 路选择上全在随机水平，47% / 90% 的预测挤在同一 label 位置，却<strong>自称置信度 0.83–0.89</strong>（自信地错）。</li>
+<li><strong>账务口径存疑，未采信。</strong> 10-05 同一条记录既写「fs 用量 17G / 200G」又写「超 20G 免费额度约 3G → 约 ¥0.03/日」，两半互相矛盾；本轮只引用「17 G / 200 G」这一可复核值，费用口径不做结论。</li>
+</ol>
+<h2 id="结论与判定">4. 结论与判定</h2>
+<ul>
+<li><strong>判定：部分完成。</strong> 依据：资产层判据 A0-1/A0-2/A0-4 全部 PASS（含实测字节数、显存、吞吐）；A0-3 只在 n=3 上 PASS，放量未做；JEV 三原语头与 RR-tree 为 0。</li>
+<li><strong>可写（支持的结论）</strong>：
+<ol type="1">
+<li>在这套 AutoDL 环境里，19.33 GB 的 Qwen3.5-9B-Base 可用 bf16 直接加载进 24 GB 卡（显存 18.8 GB、峰值 18.9 GB），单条 greedy 生成 23.6 tok/s；加载耗时约 2 分钟，瓶颈是 <code>autodl-fs</code> 网络存储 IO 而非算力。</li>
+<li>增殖 v3 在 3 条样本上能 100% 产出 baseline/perturb/branch 三类变体，错误步 3/3 落在中间步，错误类型为真代数/运算/条件错误；校验必须用字符 3-gram（<code>sim3 &gt;= 0.30</code>），不能用词级重叠。</li>
+<li>校准头的步骤级数据不必自建：<code>zd21/ReST-MCTS-PRM-0th</code> 426,449 行、<strong>33.5% 非二值</strong>；<code>MARIO-Math-Reasoning/AlphaMath-Trainset</code> 309,327 步、每步 P/Q 双浮点 —— 建议下载合计 &lt; 3 G。</li>
+<li>下载完整性只能以 mirror 实际 <code>Content-Length</code>（及 PRM800K 的 md5）为准，19.33 GB 模型 + 1.23 GB 数据这类资产可以在 200 G 文件存储上一次落盘、跨机复用。</li>
+</ol></li>
+<li><strong>不可写（诚实边界）</strong>：
+<ol type="1">
+<li>不能说「增殖脚本已验证可放量」—— n=3，accept 率 100% 未给置信区间；1k 串行 10–17 小时是<strong>估算</strong>，不是实测；1k 约 400 万 token 的成本也没有对账。</li>
+<li>不能说「TQR-JEV 头有效」—— 三原语头、RR-tree 生成、E1 LLM-judge 均为 0；TQR 子分仍是 <code>return 1.0/0.0</code> 占位，<code>evaluate_tqr()</code> 仍恒返 9.1761。</li>
+<li>不能把 23.6 tok/s 当作 RR-tree 采样吞吐 —— 单条、无批处理、无 KV cache 压测；显存只剩约 5 G（24 − 18.9），batch 上限未测。</li>
+<li>不能引用任何 fs 路径为「固定挂载点」—— westc 是 <code>/root/autodl-fs</code>、westb 是 <code>/autodl-fs/data</code>，脚本硬编码必挂。</li>
+</ol></li>
+<li><strong>对后续决策的含义</strong>：继续，但顺序固定为「给增殖脚本补并发 → 先对账再跑 1k → 用 v3 产物建 JEV 三原语头」。账户资金紧张是当前最硬的约束，任何「先开机再说」的方案都不成立。</li>
+</ul>
+<h2 id="踩坑与修正">5. 踩坑与修正</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>现象</th>
+<th>根因</th>
+<th>解法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hf download</code> 崩：<code>TypeError: process() takes no keyword arguments</code></td>
+<td>默认走 hf_xet 后端，与本机环境不兼容</td>
+<td><code>HF_HUB_DISABLE_XET=1</code>，成为必设项</td>
+</tr>
+<tr>
+<td>同一文件下载速度跳变（31 KB/s ↔︎ 3.9 MB/s）</td>
+<td>hf-mirror 限速按字节段而非按文件</td>
+<td><code>curl -C -</code> 分段续传，越过慢段；实测回升到 8.6 MB/s</td>
+</tr>
+<tr>
+<td>分片字节数与 API 元数据差 733 KB</td>
+<td>HF API 的 <code>size</code> 字段会过期</td>
+<td>一律以实际 <code>Content-Length</code> 校验</td>
+</tr>
+<tr>
+<td><code>hendrycks/competition_math</code> 403、<code>openai/PRM800K</code> 401</td>
+<td>mirror 对部分 repo 要求鉴权/已 gated</td>
+<td>换 <code>EleutherAI/hendrycks_math</code>；PRM800K 改走 GitHub LFS 真数据</td>
+</tr>
+<tr>
+<td><code>ValueError: Cannot use apply_chat_template ...</code></td>
+<td>Base 模型没有 chat template（Instruct 版才有）</td>
+<td>全部生成脚本改用纯文本 completion（<code>Problem: …\n\nSolution:\n</code>）</td>
+</tr>
+<tr>
+<td>同一份脚本在东/西两台机上找不到模型</td>
+<td><code>autodl-fs</code> 挂载点因机而异</td>
+<td>开机先 <code>df -h \| grep -i autofs</code> 确认真实挂载点，不硬编码</td>
+</tr>
+<tr>
+<td>SSH 连不上（仓库内 <code>autodl-westc</code> 别名的旧端口失效）</td>
+<td>实例换机/重开后端口与域名都会变</td>
+<td>用控制台新端口 + 仓库内 <code>known_hosts</code>，不写全局 <code>~/.ssh</code></td>
+</tr>
+<tr>
+<td>dry-run 与正式跑产出重复（<code>nm-0/1/2-base</code> 重复）</td>
+<td>v1 用追加写入，两个阶段写进同一文件</td>
+<td>v2 改覆盖写入 + 每行 <code>flush()</code></td>
+</tr>
+<tr>
+<td>v1 有 50% perturb 只改最后一步（10 条里 5 条 <code>idx=last</code>）</td>
+<td>prompt 未约束错误步位置</td>
+<td>v2 禁止改末步，强制 <code>index ∈ [1, len-2]</code></td>
+</tr>
+<tr>
+<td>v1 有 2/10 是 LaTeX 记号等价改写，被当成负例</td>
+<td>没做等价性校验</td>
+<td>v2 加校验重试；v3 定成 4 条硬校验</td>
+</tr>
+<tr>
+<td>v2 的 perturb 全部被拒（accept 0）</td>
+<td>用「空格分词后的词重叠」，数学文本几乎无空格 → 恒 0</td>
+<td>v3 改字符 3-gram Jaccard <code>&gt;= 0.30</code>，长度比放宽到 0.50</td>
+</tr>
+<tr>
+<td>本机落盘 <code>augment.py</code> 源码多次卡死 300s</td>
+<td>本机写入通道对含 regex/花括号的 Python 文件稳定失败（markdown 正常）</td>
+<td>正本放远端 <code>autodl-fs/datasets/tqr_jev/augment.py</code>（用户手动保存），本地只留便携规格</td>
+</tr>
+<tr>
+<td>Strata 相关下载全部返 <code>Invalid rev id</code></td>
+<td>revision sha 打错一个字母；且 mirror 不认 pinned revision</td>
+<td>逐字符核对 sha；放弃严格 pin、改用 <code>resolve/main</code>（代价：无法保证与 Strata 同日同文件）</td>
+</tr>
+<tr>
+<td>把「GPU 不可用」误判成 TUN 代理劫持</td>
+<td>未先判断实例是否已停止</td>
+<td>用户确认实例已停止；判定顺序改为先看实例状态，再看网络/驱动</td>
+</tr>
+</tbody>
+</table>
+<h2 id="未做-下一步">6. 未做 / 下一步</h2>
+<ol type="1">
+<li><strong>1k 增殖未跑</strong>（用户要求先确认）。串行预估 10–17 小时；1k 约 400 万 token；建议先加 <code>ThreadPoolExecutor</code>（8 线程 → 1.5–2 小时）再放量，放量前核对账户资金。</li>
+<li><strong>JEV 三原语头未实现</strong>（Noul / Choice / Score），共享 state + block-causal 分支掩码 + 一次前向并行读出的骨架未写；RR-tree 未生成；E1 LLM-judge 未跑。</li>
+<li><strong>阻塞项</strong>：<code>Stellan_Core/sub_agent_framework/base_agent.py:168</code> 的 <code>evaluate_tqr()</code> 用全默认 <code>TQRScore()</code>、不读 node → 任意节点恒返 9.176056742068813；<code>tqr_guided_rl/src/tqr/__init__.py</code> 的 α/β_r/β_n/δ 仍是占位符。不修则后续判别力测量无效。</li>
+<li><strong>待拍板</strong>：① RLCD 决策粒度 —— 最终答案（数据现成、rlcd-lite 直接抄）还是 RR-tree 节点/候选（需自建 k=8 节点级 rollout，要 GPU 钱）？② Score 头软标签主线 —— ReST-MCTS（426k 行、33.5% 非二值，最省事）还是 AlphaMath（309k 步 × 2 浮点，更贴近逐步 MCTS）？</li>
+<li><strong>rlcd-lite 依赖未装、测试未跑</strong>（27 个测试用微型随机模型，不需下载；<code>scripts/ab_eval.sh</code> 复现校准结论需真实 GPU）。B/C 层数据集只做了元数据与样本级核验，<strong>没有下载任何数据</strong>。</li>
+<li><strong>账户资金紧张（&lt; ¥20）</strong>，且普通实例连续关机 15 天会被自动释放；<code>autodl-fs</code> 上的资产不受释放影响，但 1k 增殖与 GPU 对照必须先充值。</li>
+</ol>
+<h2 id="证据与产物">7. 证据与产物</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>路径（相对 <code>autodl/</code>）</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PROGRESS.md</code></td>
+<td>逐步记录：10-05 阶段 0、10-06 增殖 v3 / GPU 验证 / RLCD 选型 / Strata 清理</td>
+</tr>
+<tr>
+<td><code>DATA-AUGMENT-REF.md</code></td>
+<td>增殖 v3 便携规格（输出 schema、4 条校验、实测验证、待改进）</td>
+</tr>
+<tr>
+<td><code>GPU-VALIDATION.md</code></td>
+<td>9B 加载/生成实测数据与三个坑、性能建议、边界</td>
+</tr>
+<tr>
+<td><code>RLCD-DATASETS.md</code></td>
+<td>数据集核验（B1/B2/B3、评测集、负面清单、头映射）、rlcd-lite 7 条实测结论</td>
+</tr>
+<tr>
+<td><code>EXPERIMENT_PLAN.md</code></td>
+<td>TQR-JEV 设计蓝图、H1–H8、S0–S6 与 Gate、风险</td>
+</tr>
+<tr>
+<td><code>PROGRESS-SUMMARY.md</code></td>
+<td>一页式状态与「下次开机提醒」</td>
+</tr>
+<tr>
+<td><code>INDEX.md</code></td>
+<td>远端资产清单、当前状态、环境限制备忘</td>
+</tr>
+<tr>
+<td><code>SESSION-2026-10-06.md</code></td>
+<td>10-06 晚会话快照与明确的边界清单</td>
+</tr>
+<tr>
+<td><code>features.py</code> / <code>e0_harness.py</code></td>
+<td>同批 E0 工具（另一条线，本轮零改动）</td>
+</tr>
+<tr>
+<td>远端 <code>autodl-fs/{models,datasets,code,logs}/</code> + <code>MANIFEST.md</code></td>
+<td>全部资产与逐文件大小/sha256 清单</td>
+</tr>
+<tr>
+<td>远端 <code>autodl-fs/datasets/tqr_jev/augment.py</code></td>
+<td>增殖脚本 v3 正本（本地无源码，只有规格）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>复现提示：GPU smoke test 脚本落在 <code>/tmp/smoke2.py</code>（会被清），日志在 <code>autodl-fs/logs/smoke9b2.log</code>（持久）；增殖小样命令为 <code>python3 augment.py --sample 1000 --limit 10 --out /tmp/dev10.jsonl</code>，放量为 <code>--out .../train.1k.jsonl</code>。</p>
+</blockquote>
+
+</article>
+<nav class="post-nav"><a href="02-infra-toolchain.html"><span class="dir">← 上一篇</span>运维工具链：一次判负、一台免费 GPU、一条不再覆盖已有内容的文档线</a><a class="next" href="04-rwkv7-state-probe.html"><span class="dir">下一篇 →</span>RWKV-7 矩阵状态「读路径」探针：先修公式，再证明探针工具可判</a></nav>
+</main>
+<footer class="site-footer"><div class="inner">
+<span>MadAIKid · 实验日志</span>
+<span>构建 2026-11-17 22:09</span>
+<span>源文件即 Markdown，站内无 JS 依赖</span>
+</div></footer>
+</body>
+</html>

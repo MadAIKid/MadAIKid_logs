@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>从「多层共振」到「局部化信息注入」：一条假设被实验逼窄的完整记录 · MadAIKid · 实验日志</title>
+<meta name="description" content="要判断「仿 capsule 的多层投票 / 解码期多层共振」这个想法值不值得投入，本线按预注册判据统计了 S0→E-7 共七轮：S0 的均匀平均层间一致性零增量（5/5 组 CI 含 0 或为负）、E-2 路径级与 E-5a token 级判负、E-1 的 +2.9pt 其实只来自倒数第二层，最终只留下一个条件性结论——局部化信息注入剖面在控制 12 维熵轨迹后对答案正确性仍有 pooled…">
+<meta name="generator" content="blog/build.py">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<header class="site-header"><div class="inner">
+<a class="brand" href="../index.html">MadAIKid<span class="dot">·</span>logs</a>
+<nav class="site-nav">
+<a href="../index.html">实验日志</a>
+<a href="../timeline.html">时间索引</a>
+<a href="https://github.com/MadAIKid/MadAIKid_logs">GitHub</a>
+</nav>
+</div></header>
+<main class="wrap">
+<div class="article-head">
+<div class="crumb"><a href="../index.html">实验日志</a> / 08-mtp-resonance</div>
+<h1>从「多层共振」到「局部化信息注入」：一条假设被实验逼窄的完整记录</h1>
+<p class="subtitle">S0 → E-7 的七轮判负与一次条件性正结果；MTP 手工加载三坑</p>
+<dl class="spec"><div class="item"><dt>编号</dt><dd>MTP</dd></div><div class="item"><dt>日期</dt><dd>2026-11-16 → 2026-11-17</dd></div><div class="item"><dt>状态</dt><dd><span class="badge status-部分完成">部分完成</span></dd></div><div class="item"><dt>判定</dt><dd>S0/E-2/E-5a 零；E-6 熵轨迹后 +0.041；E-7 +0.016 CI 含 0</dd></div><div class="item"><dt>标签</dt><dd>MTP / 共振 / 信息注入 / 探针 / 判负</dd></div><div class="item"><dt>硬件</dt><dd>AutoDL RTX 4080 SUPER 32G（westc）· 本地 Mac CPU（0.5B 独立复现）</dd></div><div class="item"><dt>模型</dt><dd>Qwen3.5-4B-Base（含 MTP）· Qwen3-4B-Base · Qwen2.5-7B · Qwen3-4B-Instruct-2507 · Qwen2.5-0.5B</dd></div><div class="item"><dt>数据</dt><dd>NFCorpus · tinyshakespeare · 2WikiMultiHopQA · MuSiQue</dd></div><div class="item"><dt>源文档</dt><dd>mtp-resonance/REPORT.md · MTP-RESONANCE-PLAN.md · mtp-resonance/results/S0-SUMMARY.md · mtp-resonance/README.md · research/mtp-resonance-related.md · PROGRESS.md</dd></div></dl>
+</div>
+<article class="prose">
+<blockquote>
+<p><strong>一句话</strong>：要判断「仿 capsule 的多层投票 / 解码期多层共振」这个想法值不值得投入，本线按预注册判据统计了 S0→E-7 共七轮：S0 的均匀平均层间一致性零增量（5/5 组 CI 含 0 或为负）、E-2 路径级与 E-5a token 级判负、E-1 的 +2.9pt 其实只来自倒数第二层，最终只留下一个<strong>条件性</strong>结论——局部化信息注入剖面在控制 12 维熵轨迹后对答案正确性仍有 pooled <strong>+0.041 AUROC（CI [+0.008,+0.077]）</strong>，但换 instruct 模型就掉到 <strong>+0.016（CI [−0.006,+0.043]）不显著</strong>，且全部是 teacher-forcing 后验特征、未做因果与在线验证。</p>
+</blockquote>
+<h2 id="摘要">0. 摘要</h2>
+<p>这条线要回答的不是「共振有没有理论依据」，而是「要不要为一个 capsule 式多层投票的设计继续投入 GPU」——所以第一轮就把判死阈值写死在出数之前。把「共振」拆成「谁投票 × 怎么量 × 兑现成什么」后，本线走完了七个可独立判死的档：S0（层间均匀平均）、E-1（MTP 跨视界）、E-2（路径级）、E-3/E-4（激发/信息注入剖面）、E-5a（token 级）、E-6（熵轨迹对照）、E-7（instruct 模型边界）。</p>
+<p>结果是一条<strong>单调收窄</strong>的曲线：想法里的「多层聚合」在每一档都被证明不成立（E-1 全 32 层聚合 0.8594 &lt; 单层 0.8595；零模型三次显示真实剖面比随机更平滑），但「深度剖面的标量形状含有答案正确性信息」这一残片活了下来，代价是把名字从 resonance 改成 <strong>localized information injection</strong>，并且必须承认它在强模型上不存在。</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>实验</th>
+<th>问题</th>
+<th>结果</th>
+<th>判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S0</td>
+<td>逐位置、跨层均匀平均的一致性，能否超出 confidence 预测 next-token 错？</td>
+<td>3 模型 × 5 组，ΔAUC −0.0000 ~ −0.0244；4B/NFCorpus −0.0000 [−0.0010,+0.0010]</td>
+<td>❌ 该构造无增量</td>
+</tr>
+<tr>
+<td>E-1</td>
+<td>MTP 跨视界一致性能否预测 draft 接受率？</td>
+<td>去泄漏后 +0.0287 [0.0205,0.0368]；但单层 0.8595 ≈ 全 32 层 0.8594</td>
+<td>⚠️ 有增量但只是单层</td>
+</tr>
+<tr>
+<td>E-2</td>
+<td>路径级跨视界一致性能否预测答案对错？</td>
+<td>ΔAUC +0.050 [−0.010,+0.108]；同题排序仅 12/150 题可用；best-of-k 反而更差</td>
+<td>❌ 不显著 / 功效不足</td>
+</tr>
+<tr>
+<td>E-3/E-4</td>
+<td>激发/信息注入剖面（标量）能否预测答案对错？</td>
+<td>seed0 +0.089 [0.018,0.161]、seed1 +0.085 [0.027,0.143]、musique +0.046 [−0.013,0.104]；pooled +0.058 [+0.017,+0.091]</td>
+<td>✅ 方向可复现</td>
+</tr>
+<tr>
+<td>E-5a</td>
+<td>逐 token 激发能否标记该 token 被预测错？</td>
+<td>8,160 token：0.853 → 0.852，ΔAUC −0.0009 [−0.0015,−0.0003]</td>
+<td>❌ token 级零</td>
+</tr>
+<tr>
+<td>E-6</td>
+<td>序列级增量是否只是「熵轨迹」？</td>
+<td>12 维熵轨迹基线后：2wiki +0.052 [+0.017,+0.093]、musique +0.038 [−0.005,+0.082]、pooled +0.041 [+0.008,+0.077]</td>
+<td>✅ 仍显著（衰减 ~30%）</td>
+</tr>
+<tr>
+<td>E-7</td>
+<td>换 instruct 模型是否复现？</td>
+<td>基线 0.891 → 0.907，ΔAUC +0.016 [−0.006,+0.043]</td>
+<td>⚠️ 不显著（边界）</td>
+</tr>
+</tbody>
+</table>
+<h2 id="问题与假设">1. 问题与假设</h2>
+<p><strong>决策问题</strong>：在单卡 32G、预算 &lt;¥30 的前提下，是继续给「多层投票 / 解码期共振」这条线投算力，还是把结论收口成「一个条件性的序列级特征」并停手。这个问题被拆成三个可独立判死的子问题：</p>
+<ol type="1">
+<li><strong>谁投票</strong>：MTP 的 K 个头 / 同一次前向的 L 层（logit lens）/ draft 树的 K 条路径；</li>
+<li><strong>共振怎么量</strong>：分布一致（KL / cosine / JSD）/ 隐藏态一致 / 路径级累积；</li>
+<li><strong>兑现成什么</strong>：省验证算力 / 提正确率 / 只做机理诊断。本轮拍板的是<strong>先做机理诊断，哪怕负结果</strong>；「计算量化」取<strong>算力归因/记账</strong>口径（每层花多少 FLOPs、产生多少可归因贡献），不是 int8/int4 数值量化。</li>
+</ol>
+<p><strong>预注册判死（写于 2026-11-16 23:2x，在 S0 出数之前）</strong>：</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>档</th>
+<th>主要终点</th>
+<th>判死条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S0</td>
+<td>控制 confidence 后的 ΔAUROC（5 折 GroupKFold + 1000× bootstrap）</td>
+<td>ΔAUC ≤ +0.01 <strong>或</strong> 95% CI 含 0 ⇒ 该构造无增量</td>
+</tr>
+<tr>
+<td>S1</td>
+<td>接受率 AUROC、接受长度</td>
+<td>agreement 的 AUROC 不超 draft confidence +2pt ⇒ 判伪</td>
+</tr>
+<tr>
+<td>S2</td>
+<td>同 FLOPs 下的质量/吞吐</td>
+<td>不优于「固定 draft 长度 + 精确验证」⇒ 判负</td>
+</tr>
+</tbody>
+</table>
+<p>S0 之后判据被用户批评过一轮（「避免根据短期结果直接出死结论，当前实验比较简陋」），这条批评成立，于是 §10 补了「先找信息增量」协议：预注册最小可发布效应、每个构造单独检验不做共线特征一锅炖、结论分 <code>SIGNAL / WEAK / NULL</code> 三级，不再用「KILL 整条线」。E-1 起的每一档都按这个协议跑。</p>
+<p><strong>为什么怀疑已有做法</strong>（文献定位，2026-11-16 一次检索，33 条 arXiv id 逐个核对）：</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>零件</th>
+<th>已被谁占</th>
+<th>对本线的含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>跨层一致性当不确定性估计</td>
+<td>2603.22299（单次前向、agreement patterns，分布内追平 probing、跨数据集迁移更好）</td>
+<td>「一致性作为特征」已被做掉，只剩「是否提供 confidence 之外的增量」</td>
+</tr>
+<tr>
+<td>解码期用多层 logits</td>
+<td>DoLa 2309.03883（late vs early 层对比，<strong>直接提升事实性</strong>）</td>
+<td>「多层共振能提正确率」必须先打过 DoLa</td>
+</tr>
+<tr>
+<td>draft 路径选择信号</td>
+<td>EAGLE-2 2406.16858（draft confidence 校准良好、近似接受率）、SpecDec++ 2405.19715（acceptance head）</td>
+<td>任何一致性信号要在<strong>同验证预算</strong>下打败一个几乎零成本的基线</td>
+</tr>
+<tr>
+<td>一致性当停止/早退</td>
+<td>2609.09989（预注册 3,520 条 consensus 规则<strong>零条通过</strong>）、2501.06240（routing 迭代只极化连接）、2605.29800（9 个不同家族 judge 只值 ≈2 票）</td>
+<td>同源投票者的有效票数接近 1，「多层投票」的先验很低</td>
+</tr>
+<tr>
+<td>上层表示冗余</td>
+<td>2610.27711（任务信息集中在中上部 3–4 层，截掉 31% 层精度不变）</td>
+<td>冗余层投票只是把同一误差再平均一遍</td>
+</tr>
+</tbody>
+</table>
+<p>「capsule routing-by-agreement 用于 LLM 解码期」本次检索<strong>未命中</strong>——但这个位置空着的原因比空着本身更重要：它的三个前提（独立投票者、共识不饱和、共识≠置信度）在 LLM 上一个都不成立。</p>
+<h2 id="实验设置">2. 实验设置</h2>
+<h3 id="环境">2.1 环境</h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>项</th>
+<th>值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GPU 实例</td>
+<td>AutoDL 实例 westc（域名/端口已隐去）；<code>memory.total</code> 实测 32,760 MiB ⇒ RTX 4080 SUPER 32G，<strong>不是</strong>历史文档里的 4090-48G</td>
+</tr>
+<tr>
+<td>本地机</td>
+<td>macOS 22.6.0 x86_64 / Intel i7-7820HQ 4 核 / 16 GiB / 无 GPU（0.5B 独立复现）</td>
+</tr>
+<tr>
+<td>框架</td>
+<td>远端 AutoDL 镜像 + <code>/root/miniconda3/bin/python</code>；本地 <code>torch==2.2.2</code>（最后一个 macOS x86_64 构建）、<code>transformers==4.46.3</code>、<code>numpy==1.26.4</code>、<code>scikit-learn==1.5.2</code></td>
+</tr>
+<tr>
+<td>成本</td>
+<td>S0 约 12 分钟（&lt;¥1）；E-1 约 ¥1；本线累计约 3.5 h（含一次实例重置），按 4080S 32G 档估算 ¥8–10</td>
+</tr>
+</tbody>
+</table>
+<h3 id="模型与数据">2.2 模型与数据</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>模型</th>
+<th>层数 / 关键差异</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen3.5-4B-Base</td>
+<td>32 层（24 层 GDN 线性注意力 + 8 层 full attention）、248k 词表、checkpoint <strong>内含 <code>mtp.*</code></strong></td>
+<td>S0、E-1、E-2、E-3~E-6 主力</td>
+</tr>
+<tr>
+<td>Qwen3-4B-Base</td>
+<td>36 层、全 full attention、151k 词表</td>
+<td>S0 对照</td>
+</tr>
+<tr>
+<td>Qwen2.5-7B</td>
+<td>28 层</td>
+<td>S0 对照</td>
+</tr>
+<tr>
+<td>Qwen3-4B-Instruct-2507</td>
+<td>chat 模板、<strong>无 MTP</strong></td>
+<td>E-7 边界</td>
+</tr>
+<tr>
+<td>Qwen2.5-0.5B</td>
+<td>24 层、hidden 896</td>
+<td>本地 CPU 独立复现</td>
+</tr>
+</tbody>
+</table>
+<p>数据：NFCorpus / tinyshakespeare 用于 S0 与 E-5a 的逐位置统计（每次 8,128–8,160 位置）；2WikiMultiHopQA 与 MuSiQue 用于 E-2 起的答案级任务（只用含 gold 的 context，每题 greedy + 4 采样，≤24 token）。本地 0.5B 侧：<code>model.safetensors</code> 988,097,824 B（对源站 Content-Length 逐字节核对），tinyshakespeare 1,115,394 B / 301,829 tokens。远端权重在 <code>/root/autodl-tmp/models/</code>。</p>
+<p><strong>Qwen3.5-4B-Base 的加载细节</strong>（会静默错的地方）：checkpoint 是 <code>Qwen3_5ForConditionalGeneration</code>（多模态壳 + <code>model.language_model</code> 文本塔、<code>tie_word_embeddings=True</code>），但 <code>AutoModelForCausalLM</code> 能直接加载成 <code>Qwen3_5ForCausalLM</code>，missing/unexpected 均为 0。</p>
+<h3 id="方法">2.3 方法</h3>
+<p><strong>层分布（logit lens）</strong>：对位置 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>t</mi><annotation encoding="application/x-tex">t</annotation></semantics></math> 与第 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>l</mi><annotation encoding="application/x-tex">l</annotation></semantics></math> 层残差流 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msubsup><mi>h</mi><mi>t</mi><mrow><mo stretchy="false" form="prefix">(</mo><mi>l</mi><mo stretchy="false" form="postfix">)</mo></mrow></msubsup><annotation encoding="application/x-tex">h_t^{(l)}</annotation></semantics></math>，</p>
+<p><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msubsup><mi>p</mi><mi>t</mi><mrow><mo stretchy="false" form="prefix">(</mo><mi>l</mi><mo stretchy="false" form="postfix">)</mo></mrow></msubsup><mo>=</mo><mrow><mi mathvariant="normal">s</mi><mi mathvariant="normal">o</mi><mi mathvariant="normal">f</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">m</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">x</mi></mrow><mo minsize="120%" maxsize="120%" stretchy="true" form="prefix">(</mo><msub><mi>W</mi><mtext mathvariant="normal">out</mtext></msub><mspace width="0.167em"></mspace><mrow><mi mathvariant="normal">n</mi><mi mathvariant="normal">o</mi><mi mathvariant="normal">r</mi><mi mathvariant="normal">m</mi></mrow><mo stretchy="false" form="prefix">(</mo><msubsup><mi>h</mi><mi>t</mi><mrow><mo stretchy="false" form="prefix">(</mo><mi>l</mi><mo stretchy="false" form="postfix">)</mo></mrow></msubsup><mo stretchy="false" form="postfix">)</mo><mo minsize="120%" maxsize="120%" stretchy="true" form="postfix">)</mo><mo>,</mo><mspace width="2.0em"></mspace><msub><mi>G</mi><mi>t</mi></msub><mo>=</mo><msubsup><mi>p</mi><mi>t</mi><mrow><mo stretchy="false" form="prefix">(</mo><mi>L</mi><mo stretchy="false" form="postfix">)</mo></mrow></msubsup></mrow><annotation encoding="application/x-tex">p_t^{(l)} = \mathrm{softmax}\big(W_{\text{out}}\,\mathrm{norm}(h_t^{(l)})\big),\qquad G_t = p_t^{(L)}</annotation></semantics></math></p>
+<p>S0 的四个共振量：<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>a</mi><mrow><mi>t</mi><mi>o</mi><mi>p</mi><mn>1</mn></mrow></msub><mo>=</mo><mfrac><mn>1</mn><mi>L</mi></mfrac><msub><mo>∑</mo><mi>l</mi></msub><mn>𝟏</mn><mo stretchy="false" form="prefix">[</mo><mrow><mi>arg</mi><mo>&#8289;</mo></mrow><mrow><mi>max</mi><mo>&#8289;</mo></mrow><msup><mi>p</mi><mrow><mo stretchy="false" form="prefix">(</mo><mi>l</mi><mo stretchy="false" form="postfix">)</mo></mrow></msup><mo>=</mo><mrow><mi>arg</mi><mo>&#8289;</mo></mrow><mrow><mi>max</mi><mo>&#8289;</mo></mrow><mi>G</mi><mo stretchy="false" form="postfix">]</mo></mrow><annotation encoding="application/x-tex">a_{top1}=\frac1L\sum_l \mathbf1[\arg\max p^{(l)}=\arg\max G]</annotation></semantics></math>、<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msub><mi>a</mi><mrow><mi>c</mi><mi>o</mi><mi>s</mi></mrow></msub><annotation encoding="application/x-tex">a_{cos}</annotation></semantics></math>（去均值 logits 的层间 cos 均值）、<code>jsd_adj</code>（相邻层 JSD 均值）、capsule 路由（<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>r</mi><mo>=</mo><mn>3</mn><mo>,</mo><mi>β</mi><mo>=</mo><mn>4</mn></mrow><annotation encoding="application/x-tex">r=3,\beta=4</annotation></semantics></math>，<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>u</mi><mi>l</mi></msub><mo>=</mo><msup><mi>p</mi><mrow><mo stretchy="false" form="prefix">(</mo><mi>l</mi><mo stretchy="false" form="postfix">)</mo></mrow></msup></mrow><annotation encoding="application/x-tex">u_l=p^{(l)}</annotation></semantics></math>，<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>s</mi><mi>l</mi></msub><mo>=</mo><mrow><mi>cos</mi><mo>&#8289;</mo></mrow><mo stretchy="false" form="prefix">(</mo><msub><mi>u</mi><mi>l</mi></msub><mo>,</mo><mover><mi>u</mi><mo accent="true">‾</mo></mover><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">s_l=\cos(u_l,\bar u)</annotation></semantics></math>，<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>w</mi><mo>=</mo><mrow><mi mathvariant="normal">s</mi><mi mathvariant="normal">o</mi><mi mathvariant="normal">f</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">m</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">x</mi></mrow><mo stretchy="false" form="prefix">(</mo><mi>β</mi><mi>s</mi><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">w=\mathrm{softmax}(\beta s)</annotation></semantics></math>）、算力归因加权投票（<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>c</mi><mi>l</mi></msub><mo>=</mo><mrow><mi mathvariant="normal">K</mi><mi mathvariant="normal">L</mi></mrow><mo stretchy="false" form="prefix">(</mo><msup><mi>p</mi><mrow><mo stretchy="false" form="prefix">(</mo><mi>l</mi><mo stretchy="false" form="postfix">)</mo></mrow></msup><mo stretchy="false" form="postfix">∥</mo><msup><mi>p</mi><mrow><mo stretchy="false" form="prefix">(</mo><mi>l</mi><mo>−</mo><mn>1</mn><mo stretchy="false" form="postfix">)</mo></mrow></msup><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">c_l=\mathrm{KL}(p^{(l)}\|p^{(l-1)})</annotation></semantics></math>，<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>w</mi><mo>=</mo><mrow><mi mathvariant="normal">s</mi><mi mathvariant="normal">o</mi><mi mathvariant="normal">f</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">m</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">x</mi></mrow><mo stretchy="false" form="prefix">(</mo><mi>c</mi><mi>/</mi><mrow><mi mathvariant="normal">m</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">d</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">n</mi></mrow><mo stretchy="false" form="prefix">(</mo><mi>c</mi><mo stretchy="false" form="postfix">)</mo><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">w=\mathrm{softmax}(c/\mathrm{median}(c))</annotation></semantics></math>）、DoLa 对照。基线统一是 target-free 的三个置信度 <code>{entropy, max, margin}</code>；<code>log_py</code>、<code>rank_y</code> 用到了 target，只作诊断、不进基线。</p>
+<p><strong>E-1 的跨视界量</strong>：手工加载的 MTP 头在 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>t</mi><annotation encoding="application/x-tex">t</annotation></semantics></math> 预测 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>t</mi><mo>+</mo><mn>1</mn></mrow><annotation encoding="application/x-tex">t{+}1</annotation></semantics></math>；把「层 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>l</mi><annotation encoding="application/x-tex">l</annotation></semantics></math> 的预测是否与 MTP 一致」构造成 <strong>(层 × 视界) 共振张量</strong>。标签（是否被接受）由最终层 argmax 定义，因此<strong>所有特征一律排除 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>l</mi><mo>=</mo><mi>L</mi></mrow><annotation encoding="application/x-tex">l=L</annotation></semantics></math></strong>，否则标签泄漏。</p>
+<p><strong>E-3 起的激发/信息注入剖面</strong>：对每个生成 token 的<strong>预测状态位置</strong>（<code>P+t−1</code>，第一版错成 <code>P+t</code>，已修）：</p>
+<ul>
+<li>主测量 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>I</mi><msub><mi>G</mi><mi>l</mi></msub><mo>=</mo><msub><mi>H</mi><mi>l</mi></msub><mo>−</mo><msub><mi>H</mi><mrow><mi>l</mi><mo>+</mo><mn>1</mn></mrow></msub></mrow><annotation encoding="application/x-tex">IG_l = H_l - H_{l+1}</annotation></semantics></math>（逐层 logit-lens 熵降）；</li>
+<li>FFN 发放率 = <code>down_proj</code> 输入的正值比例 / 绝对值均值；</li>
+<li>残差更新 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="postfix">∥</mo><msub><mi>h</mi><mrow><mi>l</mi><mo>+</mo><mn>1</mn></mrow></msub><mo>−</mo><msub><mi>h</mi><mi>l</mi></msub><mo stretchy="false" form="postfix">∥</mo><mi>/</mi><mo stretchy="false" form="postfix">∥</mo><msub><mi>h</mi><mi>l</mi></msub><mo stretchy="false" form="postfix">∥</mo></mrow><annotation encoding="application/x-tex">\|h_{l+1}-h_l\|/\|h_l\|</annotation></semantics></math>；</li>
+<li>per-token z-score 后检局部峰（prominence&gt;0.3、z&gt;0.8），统计峰数/峰位/集中度；</li>
+<li><strong>零模型</strong>：打乱层序后重算峰数分布。</li>
+</ul>
+<p><strong>统计</strong>：5 折 GroupKFold（按 chunk 分组，避免同块泄漏）+ logistic 回归 + 标准化；bootstrap 1,000 次（S0 按 chunk 重采样，答案级实验按题分组重采样）。</p>
+<h2 id="结果">3. 结果</h2>
+<h3 id="主结果">3.1 主结果</h3>
+<p><strong>S0（逐位置 × 跨层均匀平均 × next-token 错误）</strong>：5 组配置全部落在判死线内。</p>
+<table style="width:100%;">
+<colgroup>
+<col style="width: 14%" />
+<col style="width: 14%" />
+<col style="width: 14%" />
+<col style="width: 14%" />
+<col style="width: 14%" />
+<col style="width: 14%" />
+<col style="width: 14%" />
+</colgroup>
+<thead>
+<tr>
+<th>模型</th>
+<th>语料</th>
+<th>err_rate</th>
+<th>conf AUC</th>
+<th>+共振 ΔAUC [95% CI]</th>
+<th>AURC conf → +共振</th>
+<th>判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen3-4B-Base (36L)</td>
+<td>NFCorpus</td>
+<td>0.461</td>
+<td>0.847</td>
+<td><strong>−0.0000 [−0.0010, +0.0010]</strong></td>
+<td>0.1926 → 0.1933</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>Qwen3-4B-Base (36L)</td>
+<td>Shakespeare</td>
+<td>0.631</td>
+<td>0.848</td>
+<td><strong>−0.0244 [−0.0683, +0.0001]</strong></td>
+<td>0.3520 → 0.3620</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>Qwen2.5-7B (28L)</td>
+<td>NFCorpus</td>
+<td>0.453</td>
+<td>0.860</td>
+<td><strong>−0.0020 [−0.0055, +0.0003]</strong></td>
+<td>0.1884 → 0.1898</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>Qwen3.5-4B-Base (32L)</td>
+<td>NFCorpus</td>
+<td>0.480</td>
+<td>0.858</td>
+<td><strong>−0.0007 [−0.0016, +0.0001]</strong></td>
+<td>0.2100 → 0.2107</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>Qwen3.5-4B-Base (32L)</td>
+<td>Shakespeare</td>
+<td>0.616</td>
+<td>0.851</td>
+<td><strong>−0.0001 [−0.0011, +0.0007]</strong></td>
+<td>0.3371 → 0.3370</td>
+<td>❌</td>
+</tr>
+</tbody>
+</table>
+<p>CI 宽度只有 ±0.001 的那几组是<strong>精确的零</strong>，不是噪声；两组 Shakespeare 更差是因为共振特征纯属噪声、增加了 8 个共线维度的方差。单信号层面更能说明问题：<code>conf_max</code> 0.863 / <code>conf_entropy</code> 0.847，而共振侧最强的 <code>a_top1</code> 只有 <strong>0.654</strong>、capsule 路由 0.617、DoLa 0.614、算力归因加权 0.603——<strong>没有一个共振量接近置信度</strong>。逐层余弦的「信息深度」也印证了文献：4B 上 L3 达峰 0.641，到末层 L36 掉回 0.501；7B 上 L27 达峰 0.629。</p>
+<p><strong>E-1（跨视界 × 接受率）</strong>：</p>
+<table>
+<colgroup>
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+</colgroup>
+<thead>
+<tr>
+<th>目标</th>
+<th>基线</th>
+<th>ΔAUC（95% CI）</th>
+<th>ΔAUPRC</th>
+<th>判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>next-token 错误（T1）</td>
+<td>conf 三特征</td>
+<td><strong>−0.0003 [−0.0012, +0.0006]</strong></td>
+<td>+0.0002</td>
+<td>❌ null</td>
+</tr>
+<tr>
+<td>接受率（T2，去泄漏）</td>
+<td>MTP 自身 confidence</td>
+<td><strong>+0.0287 [+0.0205, +0.0368]</strong></td>
+<td>+0.0097</td>
+<td>⚠️ 有增量</td>
+</tr>
+<tr>
+<td>T2 泄漏审计（含最终层的旧特征）</td>
+<td>同上</td>
+<td>+0.0771（0.817→0.894）</td>
+<td>—</td>
+<td>❌ 虚高 ≈2.7×，已废弃</td>
+</tr>
+</tbody>
+</table>
+<p><strong>E-1 的结构性发现才是对「多层投票」的直接检验</strong>：逐层「与 MTP 一致」对接受率的 AUC，<strong>前 16 层全是 0.50</strong>，信号只在最后几层（L29 0.656 / L30 0.697 / <strong>L31 0.769</strong>）。<code>mtp_conf</code> 0.817 → 加 <code>agree[L31]</code> 单层 <strong>0.8595</strong>；加<strong>全部 32 层（去泄漏）</strong>是 <strong>0.8594</strong>——多层聚合比单层还差 0.0001。前缀验证同样悲观：只用 0..m 层预测时，m=31 → 0.859（省 1 层）、m=28 → 0.833、m=24 → 0.818、m=16 → 0.813（≈conf 基线），想靠提前退出验证省算力，最多只能省 1–2 层。</p>
+<p><strong>E-2（路径级 → 答案正确性）</strong>：Qwen3.5-4B-Base / 2wiki 150 题（含 gold 的 context，零样本正确率 32.1%），每题 greedy + 4 采样 ⇒ 名义 750 条轨迹（<code>PROGRESS.md</code> 该节记 707 条，差额源文档未解释，各指标按实际样本算）。conf-only 0.599 → conf+path 0.649，ΔAUC +0.050（CI [−0.010, +0.108]，含 0）；ΔAUPRC +0.027（CI [−0.037, +0.093]）。单特征方向化后 <code>slope_mtp_agree</code> 0.632、<code>agree_delta_half</code> 0.607、<code>mean_mtp_agree</code> 0.575，均未超过 <code>mean_margin</code>。同题排序只有 <strong>12/150 题</strong>同时含对/错样本，无法估计；best-of-k 按特征挑一条得到 0.284 / 0.257 / 0.223，<strong>低于</strong>随机 0.315（选择噪声）。</p>
+<p><strong>E-3/E-4/E-6/E-7（序列级激发剖面）</strong>：同一套 5 个激发特征，基线逐级加强。</p>
+<table>
+<colgroup>
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+</colgroup>
+<thead>
+<tr>
+<th>运行</th>
+<th>任务 / n</th>
+<th>基线 → +激发</th>
+<th>ΔAUC [95% CI]</th>
+<th>判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>E-3 seed0</td>
+<td>2wiki / 366</td>
+<td>0.584 → 0.673</td>
+<td><strong>+0.089 [0.018, 0.161]</strong></td>
+<td>✅ 首个正增量</td>
+</tr>
+<tr>
+<td>E-4a seed1</td>
+<td>2wiki / 559</td>
+<td>0.583 → 0.668</td>
+<td><strong>+0.085 [0.027, 0.143]</strong></td>
+<td>✅</td>
+</tr>
+<tr>
+<td>E-4b seed2</td>
+<td>musique / 556</td>
+<td>0.696 → 0.742</td>
+<td>+0.046 [−0.013, +0.104]</td>
+<td>❌ 单独不显著</td>
+</tr>
+<tr>
+<td>pooled（E-4a+E-4b，按题 bootstrap）</td>
+<td>1,115</td>
+<td>0.631 → 0.689</td>
+<td><strong>+0.058 [+0.017, +0.091]</strong></td>
+<td>✅</td>
+</tr>
+<tr>
+<td>E-6 2wiki（12 维熵轨迹基线）</td>
+<td>557</td>
+<td>0.694 → 0.746</td>
+<td><strong>+0.052 [+0.017, +0.093]</strong></td>
+<td>✅</td>
+</tr>
+<tr>
+<td>E-6 musique（同上）</td>
+<td>566</td>
+<td>0.706 → 0.744</td>
+<td>+0.038 [−0.005, +0.082]</td>
+<td>❌ 单独不显著</td>
+</tr>
+<tr>
+<td><strong>E-6 pooled</strong></td>
+<td>1,123</td>
+<td>0.706 → 0.748</td>
+<td><strong>+0.041 [+0.008, +0.077]</strong></td>
+<td>✅ 仍显著</td>
+</tr>
+<tr>
+<td>E-7 instruct（12 维熵轨迹基线）</td>
+<td>2wiki / 476</td>
+<td>0.891 → 0.907</td>
+<td>+0.016 [−0.006, +0.043]</td>
+<td>❌ 不显著</td>
+</tr>
+</tbody>
+</table>
+<p>E-6 的 12 维熵轨迹基线是 <code>mean/std/min/max/range/slope/tail/head</code> 八个熵形状量 + <code>nll/std_nll/margin/长度</code>。从 +0.058 到 +0.041，约 <strong>30%</strong> 的原始增量被熵轨迹吃掉，其余是激发特征的额外信息——这是本线唯一一次「加更强对照后仍然显著」。</p>
+<h3 id="对照与消融">3.2 对照与消融</h3>
+<p><strong>零模型（打乱层序）否掉了「多峰」</strong>：三次独立运行一致，观测峰数 <strong>1.55–1.60</strong> vs 零模型 <strong>2.00–2.02</strong>，比值 <strong>0.77–0.80×</strong>。真实深层剖面比随机<strong>更平滑</strong>，结构是<strong>局部化/集中</strong>，不是分布式多兴奋点。这个对照比任何 AUROC 都更直接地否定了「多层共振」的字面主张。</p>
+<p><strong>标签泄漏审计</strong>：E-1 第一版特征包含了 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>l</mi><mo>=</mo><mi>L</mi></mrow><annotation encoding="application/x-tex">l=L</annotation></semantics></math>（而标签就是最终层 argmax），ΔAUC 从 +0.0287 虚高到 +0.0771（0.817→0.894），<strong>虚高 ≈2.7×</strong>。规则改成「特征一律排除 l=L」后重跑，才得到上表数字。</p>
+<p><strong>熵十分位分层（token 级）</strong>：控制熵后激发特征的层内 AUC 掉到 0.50–0.54，只有最低熵档 0.84——但那一档错误率仅 0.4%，是样本效应。<strong>控制置信度后没有留下信号</strong>。</p>
+<p><strong>独立实现复现（本地 Mac，Qwen2.5-0.5B / tinyshakespeare / 2,040 位置 / err_rate 71.0%）</strong>：基线 A（<code>conf_entropy, conf_max, conf_margin</code>）OOF AUROC <strong>0.8066</strong> → 加 8 个共振特征 B <strong>0.8006</strong>，ΔAUC <strong>−0.0061（CI [−0.0118, −0.0003]）</strong>，AURC 0.4651 → 0.4669。与 GPU 侧 S0 同向（无增量，且略差）。这套实现是<strong>独立代码路径</strong>（25 个 hidden state、自建 logit lens、<code>torch.special.xlogy</code> 对齐 scipy），掉进同一个结论说明不是某一侧的 bug。</p>
+<p><strong>单特征强度对照</strong>：E-7 上单个激发特征反而很高——<code>ig_concentration</code> 0.878、<code>total_ig</code> 0.865、<code>mean_ig</code> 0.758——但它们与熵/置信度高度共线，被 0.891 的强基线吸收，5 个一起加只有 +0.016。E-7 的正确率是 46.8%（同一 2wiki 任务上 base 侧只有 26.8–28%），所以这里的基线本来就更难打败。</p>
+<h3 id="反直觉-负结果">3.3 反直觉 / 负结果</h3>
+<p><strong>（1）<code>mean_ig</code> 就是熵的线性变换，这条代数事实改写了整条线的口径。</strong> 因为逐层熵降求和是 telescopes：<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mo>∑</mo><mi>l</mi></msub><mi>I</mi><msub><mi>G</mi><mi>l</mi></msub><mo>=</mo><msub><mi>H</mi><mn>0</mn></msub><mo>−</mo><msub><mi>H</mi><mi>L</mi></msub></mrow><annotation encoding="application/x-tex">\sum_l IG_l = H_0 - H_L</annotation></semantics></math>，所以 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mtext mathvariant="normal">mean_ig</mtext><mo>=</mo><mo stretchy="false" form="prefix">(</mo><msub><mi>H</mi><mn>0</mn></msub><mo>−</mo><msub><mi>H</mi><mi>L</mi></msub><mo stretchy="false" form="postfix">)</mo><mi>/</mi><mi>L</mi></mrow><annotation encoding="application/x-tex">\text{mean\_ig} = (H_0-H_L)/L</annotation></semantics></math>。实测 <code>mean_ig</code> 与最终层熵的相关系数是 <strong>−1.000</strong>。E-5a 里 <code>mean_ig</code> 单特征 AUC <strong>0.842</strong>，与熵的 0.842 完全相同——这不是巧合，是恒等式。任何「信息注入」主张都必须控制熵/熵轨迹，否则只是在重复发现熵。E-6 就是这条事实的直接后果。</p>
+<p><strong>（2）token 级零增量（E-5a）</strong>：8,160 个 token，conf（熵+margin）AUC <strong>0.853</strong> → 加 9 个激发特征 <strong>0.852</strong>，ΔAUC <strong>−0.0009（CI [−0.0015, −0.0003]）</strong>。<code>max_ig</code> 0.632、<code>mean_res</code> 0.642、<code>mean_act</code> 0.616 全都不超出熵。机制主张在 token 粒度上不成立——这也说明 E-3/E-4 若成立，只能是<strong>序列聚合</strong>层面的东西。</p>
+<p><strong>（3）内容词比功能词更「不兴奋」</strong>，三次都反向：内容词峰 1.52–1.56 vs 功能词 1.67–1.69（p≤1e-8）。修正对齐前是「内容词更多」，说明该效应对对齐/口径极敏感，方向反直觉但稳定，暂不解释。</p>
+<p><strong>（4）E-1 的「省算力」承诺几乎兑现不了</strong>：信号集中在倒数 1–2 层，前缀验证显示省 4 层就掉回基线（m=24 → 0.818 vs conf 0.817）。所以「用 agreement 提前退出验证」的计算收益边际。</p>
+<p><strong>（5）E-2 的反直觉失败</strong>：路径级特征方向是对的（+0.050）但按特征挑轨迹反而比随机差（0.284 &lt; 0.315）。这不是「信号弱」，是<strong>在 n 很小、正确率 32% 的设定下做 best-of-k 选择，选择本身引入了方差</strong>。</p>
+<h2 id="结论与判定">4. 结论与判定</h2>
+<p><strong>判定：部分完成。</strong> 依据是预注册判据的逐条结算：S0 与 E-2 触发判负，E-3/E-4/E-6 在协议下判 <code>SIGNAL</code>，E-5a 判 <code>NULL</code>，E-7 停在显著性边界上（未做项与停手理由见 §6）。整条线按 <code>mtp-resonance/REPORT.md</code> 的结论<strong>收口</strong>，不再建议从「共振/投票」方向继续。</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>判据</th>
+<th>阈值（预注册）</th>
+<th>实测</th>
+<th>结算</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S0 ΔAUROC</td>
+<td>≤ +0.01 或 CI 含 0 ⇒ 判死</td>
+<td>5/5 组触发（最宽 −0.0244 [−0.0683,+0.0001]）</td>
+<td>❌ 该构造判负</td>
+</tr>
+<tr>
+<td>E-1 接受率增量</td>
+<td>CI 下界 ≥ 2pt <strong>ΔAUPRC</strong> 或显著条件互信息</td>
+<td>ΔAUC +2.9pt CI 不含 0，但 <strong>ΔAUPRC 仅 +0.0097（0.97pt）&lt; 2pt</strong></td>
+<td>⚠️ 按 AUROC 显著、按自定 AUPRC 线未达标</td>
+</tr>
+<tr>
+<td>E-2 重采样收益</td>
+<td>同质量下重采样次数 ↓ ≥10%</td>
+<td>未测到（best-of-k 0.284 vs 随机 0.315）</td>
+<td>❌ 功效不足</td>
+</tr>
+<tr>
+<td>E-3/E-4 增量</td>
+<td>CI 下界 ≥ 预注册 MDE（SIGNAL）</td>
+<td>pooled +0.058 [+0.017,+0.091]</td>
+<td>✅ SIGNAL</td>
+</tr>
+<tr>
+<td>E-5a token 级</td>
+<td>ΔAUC &gt; +2pt 且 CI 不含 0</td>
+<td>−0.0009 [−0.0015,−0.0003]</td>
+<td>❌ NULL</td>
+</tr>
+<tr>
+<td>E-6 强基线</td>
+<td>控制熵轨迹后仍显著</td>
+<td>+0.041 [+0.008,+0.077]</td>
+<td>✅ SIGNAL（衰减 30%）</td>
+</tr>
+<tr>
+<td>E-7 强模型</td>
+<td>同 E-6 口径</td>
+<td>+0.016 [−0.006,+0.043]</td>
+<td>❌ 不显著</td>
+</tr>
+</tbody>
+</table>
+<p><strong>可写（支持的结论）</strong></p>
+<ol type="1">
+<li><strong>「多层投票 / 多层共振」作为机制不成立。</strong> 证据是三条独立线索：S0 的均匀平均 ≈ confidence 代理（5/5 组零增量）；E-1 的全 32 层聚合 0.8594 <strong>不如</strong>倒数第二层单层 0.8595；零模型三次显示真实剖面比随机更平滑（1.55–1.60 vs 2.00–2.02）。适用条件：Qwen 家族 base 模型、teacher-forcing、逐位置/逐序列统计。</li>
+<li><strong>跨视界（MTP）一致性对 draft 接受率有真实信息增量，但只是单层现象。</strong> +0.0287 [+0.0205,+0.0368]（0.817→0.846），来源是倒数第二层；对 next-token 错误无增量（−0.0003 [−0.0012,+0.0006]）。</li>
+<li><strong>「局部化信息注入」是一个可复现、但条件性的序列级特征。</strong> 在 base 模型（正确率 26–28%、置信度基线弱）上，控制 12 维熵轨迹 + nll + margin + 长度后仍对答案正确性有 <strong>+4~5pt AUROC</strong>（pooled +0.041 [+0.008,+0.077]）；三次运行方向一致（+5~+9pt）。命名用 <code>localized information injection</code>，不叫 resonance。</li>
+<li><strong><code>mean_ig ≡ 熵的线性变换</code>（corr −1.000）是可以独立带走的测量学结论</strong>：任何「信息注入/惊讶下降」类的逐层读数，只要做层平均就会退化成 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="prefix">(</mo><msub><mi>H</mi><mn>0</mn></msub><mo>−</mo><msub><mi>H</mi><mi>L</mi></msub><mo stretchy="false" form="postfix">)</mo><mi>/</mi><mi>L</mi></mrow><annotation encoding="application/x-tex">(H_0-H_L)/L</annotation></semantics></math>，必须先控制熵轨迹再谈增量。</li>
+</ol>
+<p><strong>不可写（诚实边界）</strong></p>
+<ol type="1">
+<li><strong>不能说「共振/多兴奋点」</strong>：零模型、单层对比、S0 三条证据都反向。</li>
+<li><strong>不能说「token 级激发标记了错误」</strong>：E-5a ΔAUC −0.0009，且熵十分位内层内 AUC 0.50–0.54。</li>
+<li><strong>不能说「在线可用」或「已证因果」</strong>：E-3/E-4/E-6 的特征全是 teacher-forcing 后验（需要整条前向），未做在线门控（E-5b），也未做层 ablation 的因果验证（E-8）。</li>
+<li><strong>不能说「在强模型上仍然有效」</strong>：E-7 的 +0.016 CI 含 0，单特征虽高（0.865–0.878）但被 0.891 的熵轨迹基线吸收。增量的本质是「<strong>当置信度本身不好用时补一点</strong>」，不是新的信息源。</li>
+<li><strong>不能说「路径级已被否证」</strong>：E-2 是<strong>功效不足</strong>（同题混合样本仅 12/150、CI 半宽 ±0.06），不是否证。</li>
+<li><strong>不能说「语义标签支持激发」</strong>：内容词效应三次反向，方向与直觉相反。</li>
+</ol>
+<p><strong>对后续决策的含义</strong>：从「共振」方向停手；E-5b（在线激发门控）不再建议做，因为可兑现价值依赖的增量在强模型上不存在；若要继续，只剩 E-8 因果消融（把相关变因果，¥10 量级）这一条有信息量的口子。</p>
+<h2 id="踩坑与修正">5. 踩坑与修正</h2>
+<p><strong>MTP 手工加载三坑</strong>（都会<strong>静默</strong>给出看似合理但错误的结果，值得单独成表）：</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>现象</th>
+<th>根因</th>
+<th>解法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>teacher-forced 准确率 <strong>1.4%</strong>（等于随机），但 loss 正常下降、无任何报错</td>
+<td>按 DeepSeek 的 <code>[h, e]</code> 顺序拼 <code>mtp.fc</code> 输入</td>
+<td>正确顺序是 <strong><code>[norm_e(emb(x_{i+1})), norm_h(h_i)]</code>（embedding 在前）</strong>；换序后 <strong>55.9%</strong>，与主模型同目标持平</td>
+</tr>
+<tr>
+<td>同样的权重、同样的掩码，准确率仍静默退化到 1.4%</td>
+<td>走了 sdpa attention 路径</td>
+<td><strong>必须 eager attention + 4D bool 掩码（True=屏蔽）</strong></td>
+</tr>
+<tr>
+<td>剖面全部错位一层，单特征强度「看起来还行」但方向不对</td>
+<td>预测第 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>t</mi><annotation encoding="application/x-tex">t</annotation></semantics></math> 个生成 token 应取状态位置 <strong><code>P+t−1</code></strong>，第一版写成 <code>P+t</code></td>
+<td>修正对齐后 H2（内容词 vs 功能词）从「内容词更多」翻成反向</td>
+</tr>
+</tbody>
+</table>
+<p>装配细节：<code>mtp.layers.0</code> 就是一个 full-attention decoder layer（deepcopy 文本塔第 3 层后 <code>load_state_dict</code>，11 个张量，missing=0）；<code>mtp.fc</code> 是 <code>[2560, 5120]</code>；<code>pre_fc_norm_{embedding,hidden}</code> 与 <code>mtp.norm</code> 是 zero-centered RMSNorm。验证口径：<code>mtp_acc</code> 0.559（NFCorpus）/ 0.425（Shakespeare），与主模型同目标 0.548 / 0.427 持平；与主模型 argmax 的一致率 0.725 / 0.607。</p>
+<p><strong>其他踩过的坑</strong>：</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>现象</th>
+<th>根因</th>
+<th>解法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>err_rate 报出 0.85 的假象（正确值 0.42）</td>
+<td><code>transformers 5.x</code> 的 <code>output_hidden_states[-1]</code> <strong>已经是 post-norm</strong>（与 <code>last_hidden_state</code> 逐元素 maxdiff=0），再套一次 final norm 就错了</td>
+<td>最后一层直接用，其余层套 norm；本地 4.46.3 侧同样如此（<code>hs[24] @ lm_head.weight.T</code> 与 logits 最大绝对误差 1.7e-5）</td>
+</tr>
+<tr>
+<td>E-1 ΔAUC 从 +0.0287 跳到 +0.0771</td>
+<td>特征包含 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>l</mi><mo>=</mo><mi>L</mi></mrow><annotation encoding="application/x-tex">l=L</annotation></semantics></math>，而标签就是最终层 argmax ⇒ 标签泄漏</td>
+<td>特征一律排除 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>l</mi><mo>=</mo><mi>L</mi></mrow><annotation encoding="application/x-tex">l=L</annotation></semantics></math>，泄漏审计表与主表并列保留</td>
+</tr>
+<tr>
+<td>01:50 起连不上实例（<code>kex_exchange_identification: Connection closed</code>），E-5a 结果一度以为要重跑</td>
+<td>实例被重置/关机；SSH 端口随模式变化</td>
+<td>数据在数据盘 <code>/root/autodl-tmp</code>，重置后完好，重启后直接 <code>scp</code> 取回，<strong>无需重跑</strong>；端口变化先改 <code>ssh/config</code></td>
+</tr>
+<tr>
+<td>文档里按 4090-48G 做显存预算</td>
+<td>实际实例是 RTX 4080 SUPER 32G（<code>memory.total</code> 32,760 MiB）</td>
+<td>以 <code>nvidia-smi</code> 实测为准，32G 够放 9B bf16 但算力假设要下调</td>
+</tr>
+<tr>
+<td>本地 0.5B 复现吞吐只有 5.42 tok/s</td>
+<td>Mac CPU fp32、4 核老 Intel</td>
+<td>按预注册规则从 8,192 token 自适应降到 2,048（位置数 2,040、8 个 chunk），bootstrap 簇少 ⇒ CI 偏粗</td>
+</tr>
+</tbody>
+</table>
+<h2 id="未做-下一步">6. 未做 / 下一步</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>编号</th>
+<th>内容</th>
+<th>状态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>E-5b</td>
+<td>在线激发门控：用前 k 层 IG/峰结构决定是否跳过后续层 / 是否重采样</td>
+<td><strong>未做，且不建议再做</strong>（E-7 显示增量在强模型上不存在）</td>
+</tr>
+<tr>
+<td>E-8</td>
+<td>因果消融：高/低激发轨迹上做层 ablation，验证「局部化」是否因果</td>
+<td>未做（¥10 量级），是唯一还有信息量的口子</td>
+</tr>
+<tr>
+<td>E-1 迁移</td>
+<td>在 instruct 模型上复现跨视界结论</td>
+<td><strong>不可做</strong>：只有 Qwen3.5-4B-Base 带 <code>mtp.*</code> 权重，instruct 无 MTP</td>
+</tr>
+<tr>
+<td>E-2 功效</td>
+<td>提高同题混合样本比例，让路径级结论有判决力</td>
+<td>未做（现仅 12/150、CI 半宽 ±0.06）</td>
+</tr>
+<tr>
+<td>多模型 / 多语料</td>
+<td>S0 只覆盖 Qwen 家族 × 2 语料</td>
+<td>未做，不能外推到代码/中文/长上下文</td>
+</tr>
+<tr>
+<td>本地 0.5B 复现</td>
+<td>用户叫停后由独立进程跑完，仅作复现、不构成新实验</td>
+<td>已完成（ΔAUC −0.0061）</td>
+</tr>
+</tbody>
+</table>
+<p>被中止/未跑的原因都很具体：本线实际花到 ¥8–10 量级就收口、只有一条线带 MTP 权重、以及 E-7 已经把「强模型上是否成立」这个决定性问题答成「不显著」——再往下做是堆样本而不是换问题。</p>
+<h2 id="证据与产物">7. 证据与产物</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>路径（相对 <code>autodl/</code>）</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mtp-resonance/REPORT.md</code></td>
+<td><strong>主源</strong>：S0→E-7 全部数字表、MTP 三坑、可写/不可写边界、下一步</td>
+</tr>
+<tr>
+<td><code>MTP-RESONANCE-PLAN.md</code></td>
+<td>设计 + 预注册判死 + S0 结果 + §10 逐次实验记录（E-1~E-5a 原始数字）</td>
+</tr>
+<tr>
+<td><code>mtp-resonance/results/S0-SUMMARY.md</code></td>
+<td>本地 0.5B S0 摘要：A/B 特征集、单变量 AUROC、selective prediction、分层检验</td>
+</tr>
+<tr>
+<td><code>mtp-resonance/results/s0_metrics.json</code></td>
+<td>本地 S0 全部指标原始数值（summary 里每个数字的来源）</td>
+</tr>
+<tr>
+<td><code>mtp-resonance/README.md</code></td>
+<td>0.5B 复现的环境/下载/复跑命令与实现要点（25 个 hidden state 的 norm 口径）</td>
+</tr>
+<tr>
+<td><code>research/mtp-resonance-related.md</code></td>
+<td>33 条 arXiv id 核对过的文献速查 + 「最容易被判成什么」+ 剩余空隙</td>
+</tr>
+<tr>
+<td><code>mtp-resonance/scripts/{s0_gpu,e1_mtp,e2_path,e3_excitation,e5_token}.py</code></td>
+<td>各档实验脚本（含 MTP 装配与 align 修正）</td>
+</tr>
+<tr>
+<td><code>mtp-resonance/results-remote/results-2026-11-17.tar.gz</code></td>
+<td>远端归档（8.4 MB / 54 文件，含 <code>results/{gpu,e1,e2,e3,e5,e6,e7}</code> 全部 json/npz）</td>
+</tr>
+<tr>
+<td><code>PROGRESS.md</code> 第 1215–1414 行</td>
+<td>2026-11-16/17 逐次实验原始记录（含实例重置、成本、失联与取回）</td>
+</tr>
+</tbody>
+</table>
+
+</article>
+<nav class="post-nav"><a href="07-neuron-pruning.html"><span class="dir">← 上一篇</span>神经元级剪枝与条件计算：一个被判死的「免费 40%」</a></nav>
+</main>
+<footer class="site-footer"><div class="inner">
+<span>MadAIKid · 实验日志</span>
+<span>构建 2026-11-17 22:09</span>
+<span>源文件即 Markdown，站内无 JS 依赖</span>
+</div></footer>
+</body>
+</html>

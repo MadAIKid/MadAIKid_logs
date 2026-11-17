@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RWKV-7 矩阵状态「读路径」探针：先修公式，再证明探针工具可判 · MadAIKid · 实验日志</title>
+<meta name="description" content="原案「用 RWKV-7 的矩阵状态外挂多个 JEV-style 决策头」的骨架可做，但公式与文献定位有 24 处问题（最贵的一处是 Adapter 参数量被低估 L 倍）；本轮先把公式改对、把 Pascal 卡上的纯 PyTorch loader 与六臂读数 harness 建起来并用合成信号自检（rank1 场景 R0=0.939，fullrank 场景 R3=0.912），但真权重上的…">
+<meta name="generator" content="blog/build.py">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<header class="site-header"><div class="inner">
+<a class="brand" href="../index.html">MadAIKid<span class="dot">·</span>logs</a>
+<nav class="site-nav">
+<a href="../index.html">实验日志</a>
+<a href="../timeline.html">时间索引</a>
+<a href="https://github.com/MadAIKid/MadAIKid_logs">GitHub</a>
+</nav>
+</div></header>
+<main class="wrap">
+<div class="article-head">
+<div class="crumb"><a href="../index.html">实验日志</a> / 04-rwkv7-state-probe</div>
+<h1>RWKV-7 矩阵状态「读路径」探针：先修公式，再证明探针工具可判</h1>
+<p class="subtitle">JEV 原案勘误 × x070.rc2 纯 PyTorch loader × 六臂读数的合成信号自检</p>
+<dl class="spec"><div class="item"><dt>编号</dt><dd>RWKV7</dd></div><div class="item"><dt>日期</dt><dd>2026-10-07 → 2026-10-08</dd></div><div class="item"><dt>状态</dt><dd><span class="badge status-部分完成">部分完成</span></dd></div><div class="item"><dt>判定</dt><dd>勘误 24 条；合成自检 R0=0.939、R3=0.912；真权重主实验 S2 未跑</dd></div><div class="item"><dt>标签</dt><dd>探针 / 探针工具 / 文献 / 判负</dd></div><div class="item"><dt>硬件</dt><dd>GTX 1080 Ti 11 GB（Pascal CC 6.1）· 无 Triton / 无 bf16</dd></div><div class="item"><dt>模型</dt><dd>RWKV-7 x070.rc2-172m-pile（171,807,744 参数）</dd></div><div class="item"><dt>数据</dt><dd>LAMBADA（5153 条）· 合成信号自检（n=3000）</dd></div><div class="item"><dt>源文档</dt><dd>RWKV7-JEV-REVIEW.md · RWKV7-PROBE-PLAN.md · rwkv7_sizes.py · rwkv7_jev_proto.py · rwkv7-probe/README.md · rwkv7-probe/smoke_output.txt · rwkv7-probe/lambada_output.txt · probe/README.md · probe/readouts.py · PROGRESS.md</dd></div></dl>
+</div>
+<article class="prose">
+<blockquote>
+<p><strong>一句话</strong>：原案「用 RWKV-7 的矩阵状态外挂多个 JEV-style 决策头」的骨架可做，但公式与文献定位有 24 处问题（最贵的一处是 Adapter 参数量被低估 L 倍）；本轮先把公式改对、把 Pascal 卡上的纯 PyTorch loader 与六臂读数 harness 建起来并用合成信号自检（rank1 场景 R0=0.939，fullrank 场景 R3=0.912），<strong>但真权重上的 R0 vs R1/R2/R3 主实验（S2）没有跑</strong>，因此这条线「值不值得做」仍未判决。</p>
+</blockquote>
+<h2 id="摘要">0. 摘要</h2>
+<p>本轮的产出不是实验结论，而是<strong>两份可复用的前置资产</strong>：一份把原案公式与文献逐条改对的勘误（24 条），一套能在 Pascal 卡上严格加载 x070.rc2 权重、并抽出每层每头矩阵状态 <code>S_T</code> 的纯 PyTorch 实现。</p>
+<p>四个可验证点全部通过：权重严格加载（426/426 keys、171,807,744 参数、缺失与多余 key 均为空）、LAMBADA 客观评分（5153 条，ppl 20.4244 / acc 40.21%）、六臂读数 harness 在合成信号上能干净分辨「自适应性」与「结构自由度」两根轴、零假设臂稳定落在 0.5 附近。</p>
+<p>但<strong>边界必须写在最前面</strong>：主实验 S2（真权重上 R0 对 R1/R2/R3 的读数对比）停在「待接入」，一行真权重探针数字都没有；P0/P1/P2 价值底线臂同样未跑。因此本轮只能声明「工具可判」，不能声明「RWKV-7 的 state 静态可读/不可读」。</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>实验</th>
+<th>问题</th>
+<th>结果</th>
+<th>判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RWKV7-A</td>
+<td>原案的公式与文献定位站得住吗？</td>
+<td>逐节勘误 <strong>24 条</strong>；核心状态式改减号且 k̃≠κ̂</td>
+<td>✅ 已改对</td>
+</tr>
+<tr>
+<td>RWKV7-B</td>
+<td>State Adapter 到底多贵？</td>
+<td>0.4B 上 <code>W·Flatten(S)</code> = <strong>1,661 M</strong>（backbone 的 3.7 倍）；层间共享后 <strong>4.3 M / 17.3 M</strong></td>
+<td>✅ 纯算术可复算</td>
+</tr>
+<tr>
+<td>RWKV7-C</td>
+<td>x070.rc2 能否在 Pascal 上纯 PyTorch 严格加载？</td>
+<td>426 keys、171,807,744 参数、missing/unexpected 均空</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>RWKV7-D</td>
+<td>加载出来的真是「对的模型」吗？</td>
+<td>LAMBADA n=5153：ppl <strong>20.4244</strong>、acc <strong>40.21%</strong></td>
+<td>✅ 客观检查</td>
+</tr>
+<tr>
+<td>RWKV7-E</td>
+<td>六臂读数能否分辨秩与自适应性？</td>
+<td>rank1 场景 R0 <strong>0.939</strong>；fullrank 场景 R3 <strong>0.912</strong>；Z 0.507/0.517</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>RWKV7-F</td>
+<td>真权重上 R0 vs R1/R2/R3 谁更强？</td>
+<td><strong>未跑</strong>（只有合成自检）</td>
+<td>❌ 主实验缺口</td>
+</tr>
+</tbody>
+</table>
+<h2 id="问题与假设">1. 问题与假设</h2>
+<p>这条线要回答的决策问题是：<strong>要不要在 RWKV-7 的矩阵值循环状态上继续投入（外挂决策头 / State Adapter / 动态特征）？</strong> 原案（一份《RWKV-7 State × JEV 多头 System-1》设计稿）给出的是「值得做」的肯定回答，本轮的任务是先检查它凭什么是肯定的。</p>
+<p>评审给出的预注册式判据是三条可证伪命题（否证即判负）：</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>#</th>
+<th>命题</th>
+<th>否证条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P1</td>
+<td>state 比它自己的 hidden 读出<strong>多</strong>含决策信息</td>
+<td>输入门控后的 hidden 探针 ≥ state 探针（同 F1 / 同 ECE）</td>
+</tr>
+<tr>
+<td>P2</td>
+<td>循环 state 比<strong>廉价词袋特征</strong>更值得（Pareto 前沿更优）</td>
+<td>TF-IDF+LR 落在 state 探针前沿右下方之外</td>
+</tr>
+<tr>
+<td>P3</td>
+<td>state 动力学（<code>e_t</code>/<code>ΔS_t</code>）比静态 state 更有决策价值</td>
+<td><code>[S_t, e_t]</code> 与 <code>[S_t]</code> 的 AURC 差异落在 CI 内</td>
+</tr>
+</tbody>
+</table>
+<p>怀疑原案的理由集中在四处：公式来源、Adapter 成本、<code>ΔS</code> 的信息论地位、以及新颖性定位（完整的文献检索后，原案约 <strong>75–80% 是标准先验</strong>：learning-to-defer、校准、探针协议、多头 MTL、按收敛停止都有 1970–2024 的规范文献）。表里是逐条勘误中最影响实验设计的那几行，<code>原式 → 订正式</code>：</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>原案位置</th>
+<th>原案写法</th>
+<th>错在哪</th>
+<th>订正式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>§1 状态更新</td>
+<td><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>S</mi><mi>t</mi></msub><mo>=</mo><msub><mi>S</mi><mrow><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo stretchy="false" form="prefix">(</mo><mrow><mi mathvariant="normal">d</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">g</mi></mrow><mo stretchy="false" form="prefix">(</mo><msub><mi>w</mi><mi>t</mi></msub><mo stretchy="false" form="postfix">)</mo><mo>+</mo><msubsup><mi>a</mi><mi>t</mi><mi>T</mi></msubsup><msub><mi>b</mi><mi>t</mi></msub><mo stretchy="false" form="postfix">)</mo><mo>+</mo><msubsup><mi>v</mi><mi>t</mi><mi>T</mi></msubsup><msub><mi>k</mi><mi>t</mi></msub></mrow><annotation encoding="application/x-tex">S_t = S_{t-1}(\mathrm{diag}(w_t) + a_t^T b_t) + v_t^T k_t</annotation></semantics></math></td>
+<td>加号来自 AI 撰写的 wiki（作者已免责）；且移除键 ≠ 写入键</td>
+<td>论文 Eq.17：<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>S</mi><mi>t</mi></msub><mo>=</mo><msub><mi>S</mi><mrow><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo stretchy="false" form="prefix">(</mo><mrow><mi mathvariant="normal">d</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">g</mi></mrow><mo stretchy="false" form="prefix">(</mo><msub><mi>w</mi><mi>t</mi></msub><mo stretchy="false" form="postfix">)</mo><mo>−</mo><msubsup><mover><mi>κ</mi><mo accent="true">̂</mo></mover><mi>t</mi><mi>T</mi></msubsup><mo stretchy="false" form="prefix">(</mo><msub><mi>a</mi><mi>t</mi></msub><mo>⊙</mo><msub><mover><mi>κ</mi><mo accent="true">̂</mo></mover><mi>t</mi></msub><mo stretchy="false" form="postfix">)</mo><mo stretchy="false" form="postfix">)</mo><mo>+</mo><msubsup><mi>v</mi><mi>t</mi><mi>T</mi></msubsup><msub><mover><mi>k</mi><mo accent="true">̃</mo></mover><mi>t</mi></msub></mrow><annotation encoding="application/x-tex">S_t = S_{t-1}(\mathrm{diag}(w_t) - \hat\kappa_t^T(a_t \odot \hat\kappa_t)) + v_t^T \tilde{k}_t</annotation></semantics></math></td>
+</tr>
+<tr>
+<td>§6B adapter</td>
+<td><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>z</mi><mo>=</mo><mi>W</mi><mspace width="0.167em"></mspace><mrow><mi mathvariant="normal">F</mi><mi mathvariant="normal">l</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">n</mi></mrow><mo stretchy="false" form="prefix">(</mo><mi>S</mi><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">z = W\,\mathrm{Flatten}(S)</annotation></semantics></math></td>
+<td>0.4B 上 1,661 M 参数 = backbone 3.7×；低秩版每 token 仍吃前向 46%</td>
+<td>层间共享投影：<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="prefix">(</mo><mi>H</mi><msup><mi>N</mi><mn>2</mn></msup><mo>+</mo><mn>2</mn><mi>d</mi><mo stretchy="false" form="postfix">)</mo><mspace width="0.167em"></mspace><mi>r</mi></mrow><annotation encoding="application/x-tex">(HN^2+2d)\,r</annotation></semantics></math> = 4.3 M(r=64) / 17.3 M(r=256)</td>
+</tr>
+<tr>
+<td>§7 ΔState</td>
+<td><code>ΔS_t</code> =「刚发生了什么变化」的新信息</td>
+<td><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="prefix">(</mo><msub><mi>S</mi><mrow><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo>,</mo><msub><mi>S</mi><mi>t</mi></msub><mo stretchy="false" form="postfix">)</mo><mo>↔</mo><mo stretchy="false" form="prefix">(</mo><msub><mi>S</mi><mi>t</mi></msub><mo>,</mo><mi mathvariant="normal">Δ</mi><msub><mi>S</mi><mi>t</mi></msub><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">(S_{t-1},S_t) \leftrightarrow (S_t,\Delta S_t)</annotation></semantics></math> 是双射；给定当前 state 与相邻 token 后条件信息为零；遗忘项恒非零</td>
+<td>用精确 innovation <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>e</mi><mi>t</mi></msub><mo>=</mo><msub><mi>S</mi><mi>t</mi></msub><mo>−</mo><msub><mi>G</mi><mi>t</mi></msub><msub><mi>S</mi><mrow><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo>=</mo><msubsup><mi>v</mi><mi>t</mi><mi>T</mi></msubsup><msub><mover><mi>k</mi><mo accent="true">̃</mo></mover><mi>t</mi></msub></mrow><annotation encoding="application/x-tex">e_t = S_t - G_t S_{t-1} = v_t^T \tilde{k}_t</annotation></semantics></math></td>
+</tr>
+<tr>
+<td>§20 多头</td>
+<td>多个 Head 比一个大 Head 更重要</td>
+<td><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>Y</mi><mo>→</mo><mi>Z</mi><mo>→</mo><mi>J</mi><mo>→</mo><mi>A</mi></mrow><annotation encoding="application/x-tex">Y \to Z \to J \to A</annotation></semantics></math> 是 Markov 链，DPI 给出 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>I</mi><mo stretchy="false" form="prefix">(</mo><mi>A</mi><mo>;</mo><mi>Y</mi><mo stretchy="false" form="postfix">)</mo><mo>≤</mo><mi>I</mi><mo stretchy="false" form="prefix">(</mo><mi>J</mi><mo>;</mo><mi>Y</mi><mo stretchy="false" form="postfix">)</mo><mo>≤</mo><mi>I</mi><mo stretchy="false" form="prefix">(</mo><mi>Z</mi><mo>;</mo><mi>Y</mi><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">I(A;Y) \le I(J;Y) \le I(Z;Y)</annotation></semantics></math>：多头只可能丢信息</td>
+<td>改写成三条可检验理由（正则 / 延迟 / 可监督），并做 ①/②/③ 三臂消融</td>
+</tr>
+<tr>
+<td>§13 校准</td>
+<td>把 ECE 加进损失；<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mrow><mi mathvariant="normal">C</mi><mi mathvariant="normal">E</mi></mrow><mo>+</mo><mi>λ</mi><mspace width="0.167em"></mspace><mrow><mi mathvariant="normal">B</mi><mi mathvariant="normal">r</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">r</mi></mrow></mrow><annotation encoding="application/x-tex">\mathrm{CE} + \lambda\,\mathrm{Brier}</annotation></semantics></math></td>
+<td>ECE 不可微且有限样本下有偏；两者作用于同一标签是双重计数</td>
+<td>只用 proper scoring rule；ECE 只作评测并报 bootstrap CI</td>
+</tr>
+<tr>
+<td>§9 三元组</td>
+<td>head 输出 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="prefix">(</mo><msub><mi>y</mi><mi>i</mi></msub><mo>,</mo><msub><mi>p</mi><mi>i</mi></msub><mo>,</mo><msub><mi>c</mi><mi>i</mi></msub><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">(y_i, p_i, c_i)</annotation></semantics></math></td>
+<td><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>y</mi><mo>=</mo><mrow><mi>arg</mi><mo>&#8289;</mo></mrow><mrow><mi>max</mi><mo>&#8289;</mo></mrow><mi>p</mi></mrow><annotation encoding="application/x-tex">y=\arg\max p</annotation></semantics></math>、<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>c</mi><annotation encoding="application/x-tex">c</annotation></semantics></math> 为分布统计量时都是确定性函数</td>
+<td>head 只输出 <code>p_i</code>；confidence 由分布导出</td>
+</tr>
+<tr>
+<td>§16 early-exit</td>
+<td><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>D</mi><mi>t</mi></msub><mo>=</mo><mo stretchy="false" form="postfix">∥</mo><mi>P</mi><mo stretchy="false" form="prefix">(</mo><msub><mi>S</mi><mi>t</mi></msub><mo stretchy="false" form="postfix">)</mo><mo>−</mo><mi>P</mi><mo stretchy="false" form="prefix">(</mo><msub><mi>S</mi><mrow><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo stretchy="false" form="postfix">)</mo><mo stretchy="false" form="postfix">∥</mo><mo>→</mo><mn>0</mn></mrow><annotation encoding="application/x-tex">D_t=\|P(S_t)-P(S_{t-1})\| \to 0</annotation></semantics></math> 即「想清楚了」</td>
+<td>稳态吞吐（ΔS=0 而信息仍在全速流动）、<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ρ</mi><mo stretchy="false" form="prefix">(</mo><mi>G</mi><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">\rho(G)</annotation></semantics></math> 无小于 1 的下界、<code>P</code> 多对一</td>
+<td><code>‖e_t‖</code> + 相邻 <code>ΔS</code> 方向余弦，且必须做无信息输入的零假设对照</td>
+</tr>
+<tr>
+<td>§17/§18 基线</td>
+<td>A–G 全是神经方法</td>
+<td>缺 TF-IDF/fastText+LR 价值底线</td>
+<td>H 臂必做，否则「同精度下省一个数量级」不能证成</td>
+</tr>
+<tr>
+<td>§23 资料</td>
+<td>把 wiki.rwkv.com 列为官方资料</td>
+<td>作者在 README 里明确免责 <em>AI-written. might contain errors</em></td>
+<td>权威序：论文 &gt; 官方代码 &gt; README &gt; Wiki</td>
+</tr>
+<tr>
+<td>§24 新颖性</td>
+<td>「该组合视为本方向首创」</td>
+<td>已有公开实现（RWKV-7-1B + Jev 式受限 softmax，acc 0.541，未复核）</td>
+<td>新颖性收窄到<strong>表示层</strong>：矩阵状态探针</td>
+</tr>
+</tbody>
+</table>
+<h2 id="实验设置">2. 实验设置</h2>
+<h3 id="环境">2.1 环境</h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>项</th>
+<th>实测值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GPU</td>
+<td>GTX 1080 Ti 11 GB，<strong>compute capability 6.1（Pascal）</strong>，驱动 525.147.05 / CUDA 12.0</td>
+</tr>
+<tr>
+<td>系统</td>
+<td>Ubuntu 18.04.6 · i5-7600K（4 核，长期任务占了约 3 核）· 15 GiB</td>
+</tr>
+<tr>
+<td>框架</td>
+<td>conda env <code>gi</code>：python 3.10 · torch 2.5.1（<code>cuda_available=True</code>）</td>
+</tr>
+<tr>
+<td>算力实测</td>
+<td>4096³ matmul：fp32 <strong>9.63 TFLOP/s</strong>、fp16 <strong>8.43 TFLOP/s</strong></td>
+</tr>
+<tr>
+<td>缺失组件</td>
+<td><strong>无 <code>nvcc</code>、无 <code>triton</code>、无 <code>fla</code></strong>；<code>sm_61 &lt; CC 7.0</code> ⇒ Triton 根本无法使用</td>
+</tr>
+</tbody>
+</table>
+<p>硬件约束直接决定了实现路线：<strong>全部纯 PyTorch</strong>，不用 <code>torch.utils.cpp_extension</code>、不编译 CUDA 扩展、不调 Triton/FLA；权重是 bfloat16 而 Pascal 不支持 bf16，必须在加载时 upcast 到 float32。</p>
+<h3 id="模型与数据">2.2 模型与数据</h3>
+<ul>
+<li>checkpoint：<code>rwkv-x070-rc2-172m-pile.pth</code>（343 MB，md5 <code>b87190fa798b473bc6a71633fe772189</code>，两份副本字节一致）。</li>
+<li>结构（从 ckpt 的 key 与形状反推）：<code>n_layer=12</code>、<code>n_embd=768</code>、<code>dim_ffn=2688</code>、<code>n_head=12</code>、<code>head_size=64</code>、<code>vocab=50304</code>；FFN 用 <strong>x060 的 channel-mix</strong>；LayerNorm 实为 <code>GroupNorm(12, 768, eps=64e-5)</code>（<code>eps = 1e-5 · 8²</code>）。</li>
+<li>tokenizer 必须用 Pile 那份 <code>20B_tokenizer.json</code>（vocab 50277，padding 到 50304）；用 World 的 65536 词表会产出垃圾 token id。</li>
+<li>LAMBADA：<code>lambada_test.jsonl</code> 全量 5153 条，stride=1（不抽样）。</li>
+</ul>
+<h3 id="方法">2.3 方法</h3>
+<p><strong>（a）模型自身读出写成泛函族。</strong> 论文 Eq.21 的读出是 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>p</mi><mi>t</mi></msub><mo>=</mo><mrow><mi mathvariant="normal">L</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">y</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">r</mi><mi mathvariant="normal">N</mi><mi mathvariant="normal">o</mi><mi mathvariant="normal">r</mi><mi mathvariant="normal">m</mi></mrow><mo stretchy="false" form="prefix">(</mo><msub><mi>r</mi><mi>t</mi></msub><msubsup><mi>S</mi><mi>t</mi><mi>T</mi></msubsup><mo stretchy="false" form="postfix">)</mo><mo>+</mo><msub><mi>u</mi><mi>t</mi></msub></mrow><annotation encoding="application/x-tex">p_t = \mathrm{LayerNorm}(r_t S_t^T) + u_t</annotation></semantics></math>，逐坐标展开即 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="prefix">(</mo><msub><mi>r</mi><mi>t</mi></msub><msubsup><mi>S</mi><mi>t</mi><mi>T</mi></msubsup><msub><mo stretchy="false" form="postfix">)</mo><mi>j</mi></msub><mo>=</mo><mo stretchy="false" form="prefix">⟨</mo><msub><mi>e</mi><mi>j</mi></msub><msubsup><mi>r</mi><mi>t</mi><mi>T</mi></msubsup><mo>,</mo><mspace width="0.222em"></mspace><msub><mi>S</mi><mi>t</mi></msub><mo stretchy="false" form="postfix">⟩</mo></mrow><annotation encoding="application/x-tex">(r_t S_t^T)_j = \langle e_j r_t^T,\ S_t\rangle</annotation></semantics></math>。也就是说，LM 自己的读出是「右因子锁在单一输入相关 <code>r_t</code> 上」的一族秩一线性泛函。于是「探针 vs 模型自己」不是包含关系，而是两根正交轴上的四个读数族（<code>K</code> 个决策类，单头参数）：</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>族</th>
+<th>泛函</th>
+<th>轴</th>
+<th>参数量</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>R0</strong></td>
+<td><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="prefix">⟨</mo><mi>c</mi><mspace width="0.167em"></mspace><msubsup><mi>r</mi><mi>t</mi><mi>T</mi></msubsup><mo>,</mo><mi>S</mi><mo stretchy="false" form="postfix">⟩</mo></mrow><annotation encoding="application/x-tex">\langle c\,r_t^T, S\rangle</annotation></semantics></math></td>
+<td>自适应（右因子=<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msub><mi>r</mi><mi>t</mi></msub><annotation encoding="application/x-tex">r_t</annotation></semantics></math>）</td>
+<td><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>K</mi><mi>H</mi><mi>N</mi></mrow><annotation encoding="application/x-tex">KHN</annotation></semantics></math></td>
+</tr>
+<tr>
+<td><strong>R1</strong></td>
+<td><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="prefix">⟨</mo><msub><mi>a</mi><mi>k</mi></msub><msup><mi>b</mi><mi>T</mi></msup><mo>,</mo><mi>S</mi><mo stretchy="false" form="postfix">⟩</mo></mrow><annotation encoding="application/x-tex">\langle a_k b^T, S\rangle</annotation></semantics></math>（<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>b</mi><annotation encoding="application/x-tex">b</annotation></semantics></math> 跨类共享固定）</td>
+<td>静态</td>
+<td><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>H</mi><mi>N</mi><mo stretchy="false" form="prefix">(</mo><mi>K</mi><mo>+</mo><mn>1</mn><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">HN(K+1)</annotation></semantics></math></td>
+</tr>
+<tr>
+<td><strong>R2</strong></td>
+<td><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="prefix">⟨</mo><msub><mi>a</mi><mi>k</mi></msub><msubsup><mi>b</mi><mi>k</mi><mi>T</mi></msubsup><mo>,</mo><mi>S</mi><mo stretchy="false" form="postfix">⟩</mo></mrow><annotation encoding="application/x-tex">\langle a_k b_k^T, S\rangle</annotation></semantics></math>（两因子各自学）</td>
+<td>静态</td>
+<td><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>2</mn><mi>H</mi><mi>K</mi><mi>N</mi></mrow><annotation encoding="application/x-tex">2HKN</annotation></semantics></math></td>
+</tr>
+<tr>
+<td><strong>R3</strong></td>
+<td><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="prefix">⟨</mo><msub><mi>W</mi><mi>k</mi></msub><mo>,</mo><mi>S</mi><mo stretchy="false" form="postfix">⟩</mo></mrow><annotation encoding="application/x-tex">\langle W_k, S\rangle</annotation></semantics></math>（满秩，可 rank 截断做容量控制）</td>
+<td>静态</td>
+<td><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>H</mi><mi>K</mi><msup><mi>N</mi><mn>2</mn></msup></mrow><annotation encoding="application/x-tex">HKN^2</annotation></semantics></math></td>
+</tr>
+</tbody>
+</table>
+<p><strong>（b）六臂对照（一次跑完）。</strong> P0 = TF-IDF+LR 价值底线；P1 = R0；P2 = hidden 向量 + <strong>输入门控</strong> MLP（门控是必需的，否则「自适应 vs 静态读出」这个混杂因子会污染对照）；P3 = R2 主实验；P3′ = 输入条件读 <code>Q(x_t)S</code>；P4 = R3 上界 + MDL 容量约束。Z 臂（标签置换 / 随机特征）是门禁：不过关则整轮作废。</p>
+<p><strong>（c）指标。</strong> AUROC / Brier / ECE（等频分箱）/ 风险-覆盖率 AURC，全部带 bootstrap CI；ECE 的去偏估计（Roelofs 式）<strong>未实现</strong>，返回值里用 <code>ece_debiased_implemented=False</code> 显式标出。</p>
+<p><strong>（d）自检先于真权重。</strong> 在碰真权重之前，用合成信号验证「状态 → 读数族 → 指标」这条链路：<code>S ~ N(0, 1/√N)</code>、<code>r</code> 同分布，<code>n=3000</code>、<code>H=4</code>、<code>N=8</code>、噪声 1.0、seed 0；两个场景分别打两根轴——<code>rank1</code>（信号 = <code>Σ_h c_hᵀ(S_h r_h)</code>，右因子输入相关）与 <code>fullrank</code>（信号 = <code>Σ_h ⟨M_h,S_h⟩</code>，<code>M_h</code> 满秩且与输入无关）。</p>
+<h2 id="结果">3. 结果</h2>
+<h3 id="主结果">3.1 主结果</h3>
+<table>
+<colgroup>
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+</colgroup>
+<thead>
+<tr>
+<th>配置</th>
+<th>指标</th>
+<th>数值</th>
+<th>95% CI</th>
+<th>判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>load_x070</code> 严格加载</td>
+<td>missing / unexpected keys</td>
+<td><code>[]</code> / <code>[]</code></td>
+<td>—</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>同上</td>
+<td>参数量（对账 ckpt）</td>
+<td>171,807,744（171.808 M）</td>
+<td>—</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>同上</td>
+<td>加载耗时 / dtype</td>
+<td>5.1–6.4 s；bf16→fp32</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>合成自检 <code>rank1</code></td>
+<td>R0 AUROC</td>
+<td><strong>0.939</strong></td>
+<td>未记录（单种子）</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>合成自检 <code>rank1</code></td>
+<td>R1 / R2 / R3(rank=2)</td>
+<td>0.517 / 0.481 / 0.514</td>
+<td>未记录</td>
+<td>✅ 落随机</td>
+</tr>
+<tr>
+<td>合成自检 <code>fullrank</code></td>
+<td>R3 AUROC</td>
+<td><strong>0.912</strong></td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>合成自检 <code>fullrank</code></td>
+<td>R0 / R1 / R2 / R3(rank=2)</td>
+<td>0.509 / 0.701 / 0.684 / 0.820</td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>零假设臂</td>
+<td>label_shuffle / random_feat</td>
+<td>0.507 / 0.517</td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>LAMBADA（真权重）</td>
+<td>ppl / acc</td>
+<td><strong>20.4244</strong> / <strong>40.21%</strong>（2072/5153）</td>
+<td>未记录</td>
+<td>✅ 客观检查</td>
+</tr>
+<tr>
+<td>吞吐（真权重，B=1）</td>
+<td>RNN decode / prefill T=256</td>
+<td>61.2 tok/s（16.34 ms/token）/ 558 tok/s</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>真权重读数对比</strong></td>
+<td>R0 vs R1/R2/R3</td>
+<td><strong>未跑</strong></td>
+<td>—</td>
+<td>❌ S2 缺口</td>
+</tr>
+</tbody>
+</table>
+<p>三件被真跑过的实现事实：① <code>S</code> 的形状确认为 <code>[B,H,N,N]</code>（每层），最后一层 <code>S.absmax</code> 达 38.76，而 <code>x.absmax</code> 逐层从 18.10 长到 406.11；② batched 前向与 RNN 逐 token 解码数值等价，<code>max|Δlogit| = 1.144e-05</code>；③ 贪心生成在真 tokenizer 下能给出 <code>The Eiffel tower is in the city of Paris, France.</code>。</p>
+<p><strong>原案参数预算复算</strong>（<code>rwkv7_sizes.py</code>，纯标准库、可独立复算，对账论文 Appendix E.2）：</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>方案</th>
+<th>参数（0.4B，r=64）</th>
+<th>参数（r=256）</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A 全局池化</td>
+<td>~0</td>
+<td>~0</td>
+<td>—</td>
+</tr>
+<tr>
+<td>B <code>W·Flatten(S)</code></td>
+<td><strong>1,661 M</strong></td>
+<td><strong>1,661 M</strong></td>
+<td>backbone 的 3.7 倍</td>
+</tr>
+<tr>
+<td>B′ 展平→r 低秩</td>
+<td>104 M</td>
+<td><strong>415 M</strong></td>
+<td>r=256 时 = 前向的 46%</td>
+</tr>
+<tr>
+<td>C 层间共享投影</td>
+<td><strong>4.3 M</strong></td>
+<td><strong>17.3 M</strong></td>
+<td>与层数无关，约为前向的 1.9%</td>
+</tr>
+</tbody>
+</table>
+<p>WKV state 与 hidden 的关系有一个干净恒等式：<code>|S_wkv|/|H_stack| = N = head_size</code>，而已发布的 RWKV-7 全部 <code>head_size=64</code>，所以这个倍数恒为 64（0.4B：<code>|S|=1,622,016</code> floats = 6.49 MB/token）。</p>
+<h3 id="对照与消融">3.2 对照与消融</h3>
+<ul>
+<li><strong>两场景互为对照</strong>：<code>rank1</code> 场景里静态族全部塌到 0.48–0.52，<code>fullrank</code> 场景里自适应族塌到 0.509——两根轴被干净分离，说明 harness 不是「怎么读都能读出信号」。</li>
+<li><strong>Z 臂过关</strong>：label_shuffle 0.507、random_feat 0.517，都贴着 0.5 ⇒ 指标没有被探针容量高估（至少在这个合成设定下）。</li>
+<li><strong>容量控制</strong>：<code>fullrank</code> 场景把 R3 从满秩降到 rank=2，AUROC 从 0.912 掉到 0.820，方向正确（降秩降能力），说明 <code>R3Readout(rank=)</code> 的截断确实起作用。</li>
+<li><strong>生成文本不能当判据</strong>：同一次 smoke 里，第二个 prompt 的贪心输出是复读 <code>User: What is the capital of France?</code>，看不出「模型对不对」。所以客观正确性改用 LAMBADA 的全量评分（40.21%），而不是「生成看起来像不像」。</li>
+</ul>
+<h3 id="反直觉-负结果">3.3 反直觉 / 负结果</h3>
+<ol type="1">
+<li><strong>自检抓到两个真问题（都已修）</strong>：① <code>R3</code> 的 einsum 维度写错（<code>bhkij</code> 少一维）⇒ 运行期 <code>RuntimeError</code>；② 第一版判据没有区分度——用「每头秩二」信号当场景时，随机高斯 <code>S</code> 下最优秩一近似仍能到 <strong>AUROC 0.98</strong>（R1 0.9789 vs R2 0.9805），<strong>秩二场景区分不出 R1/R2</strong>。换成 <code>rank1</code> / <code>fullrank</code> 两个场景才有区分度，这条也写进了 <code>probe/smoke.py</code> 的文档字符串：<strong>合成自检也会骗人，判据本身要单独验证</strong>。</li>
+<li><strong><code>fullrank</code> 里 R1(0.701) 略高于 R2(0.684)</strong>，而 R2 的形式是 R1 的超集。CI 大幅重叠，判为优化噪声而非表达力倒挂；单种子 + 早停看 val AUROC，无法排除。这正是「正式实验必须多种子」的直接理由。</li>
+<li><strong>权重定义不在工作树里</strong>：ckpt 的 key（<code>time_maa_x</code> / <code>time_aaaaa</code> / <code>gate_w1</code> …）对应的是 git 历史里的 rc2 版本，工作树里躺着的 demo 是更晚的重命名版本。按 ckpt key 命名实现后可以 strict 加载，但「对着错版本的代码读权重」是一个必踩的坑。</li>
+<li><strong>三处吞吐数字不可互相引用</strong>：B=1 的 RNN decode 是 61.2 tok/s（16.34 ms/token），prefill T=256 是 558 tok/s，LAMBADA 全序列 scoring 是 457.3 tok/s，而同机另一个 162.2 M 的退化 RWKV-7 在 16×256 batch 下报 5,075 tok/s。<strong>脱离 batching 与模式谈吞吐没有意义</strong>。</li>
+<li><strong>算术小账对不上</strong>：层间共享方案在 r=256 下给出 17.3 M，但评审正文/<code>INDEX</code> 摘要写「17.6 M / 1.95%」。按 2×450.8 M ≈ 901.5 M MAC 复算，17.3 M 对应约 <strong>1.92%</strong>，1.95% 对应 17.6 M。以可复算脚本的 17.3 M 为准。</li>
+<li><strong>主实验 S2 没有跑</strong>，所以「为什么必须是 state」这个核心问题（P1）本轮连一条真权重数字都没有。</li>
+</ol>
+<h2 id="结论与判定">4. 结论与判定</h2>
+<p><strong>判定：部分完成。</strong> 勘误、预算核算、loader、读数 harness 与自检全部完成并通过；S2 及 P0/P1/P2 臂未跑，故不给出方向性判决。</p>
+<p><strong>可写（支持的结论）</strong>：</p>
+<ol type="1">
+<li>原案最贵的一处是 Adapter 参数量：<code>W·Flatten(S)</code> 在 0.4B 上是 <strong>1,661 M</strong>（backbone 的 3.7 倍），低秩版每 token 仍占前向 <strong>46%</strong>；改成层间共享投影后是 <strong>4.3 M（r=64）/ 17.3 M（r=256）</strong>。这条是纯算术，可独立复算。</li>
+<li><code>ΔS_t</code> 是 <code>(S_{t−1},S_t)</code> 的确定性重参数化；给定 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="prefix">(</mo><msub><mi>S</mi><mi>t</mi></msub><mo>,</mo><msub><mi>x</mi><mi>t</mi></msub><mo>,</mo><msub><mi>x</mi><mrow><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">(S_t, x_t, x_{t-1})</annotation></semantics></math> 后 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>I</mi><mo stretchy="false" form="prefix">(</mo><mi mathvariant="normal">Δ</mi><msub><mi>S</mi><mi>t</mi></msub><mo>;</mo><mi>Y</mi><mo>∣</mo><msub><mi>S</mi><mi>t</mi></msub><mo>,</mo><msub><mi>x</mi><mi>t</mi></msub><mo>,</mo><msub><mi>x</mi><mrow><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo stretchy="false" form="postfix">)</mo><mo>=</mo><mn>0</mn></mrow><annotation encoding="application/x-tex">I(\Delta S_t; Y \mid S_t, x_t, x_{t-1}) = 0</annotation></semantics></math>，且它的遗忘项恒非零、在低信息 token 上主导，因此 <code>‖ΔS_t‖</code> 分不清「忘了」与「学了」；干净替代是精确 innovation <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>e</mi><mi>t</mi></msub><mo>=</mo><msubsup><mi>v</mi><mi>t</mi><mi>T</mi></msubsup><msub><mover><mi>k</mi><mo accent="true">̃</mo></mover><mi>t</mi></msub></mrow><annotation encoding="application/x-tex">e_t = v_t^T \tilde{k}_t</annotation></semantics></math>。</li>
+<li>x070.rc2 172M 权重可在 Pascal 上纯 PyTorch <strong>严格</strong>加载（426 keys / 171,807,744 参数 / 缺失与多余 key 均空），且在 LAMBADA 全量 5153 条上得 ppl <strong>20.4244</strong> / acc <strong>40.21%</strong>。</li>
+<li>六臂读数 harness 在合成信号上双向可判：<code>rank1</code> 场景 R0 <strong>0.939</strong> vs 静态族 0.481–0.517；<code>fullrank</code> 场景 R3 <strong>0.912</strong> vs R0 0.509；Z 臂 0.507/0.517。</li>
+</ol>
+<p><strong>不可写（诚实边界）</strong>：</p>
+<ol type="1">
+<li>不能说「RWKV-7 的 state 静态可读」或「静态不可读」——S2 未跑。</li>
+<li>不能说 state 探针优于 hidden 探针（P1），也不能说它优于 TF-IDF（P2）——两条臂都未跑。</li>
+<li>不能用「每步最多移除 45.5%」推出 state 会收敛或可用于 early-exit：<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>G</mi><mo>=</mo><mrow><mi mathvariant="normal">d</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">g</mi></mrow><mo stretchy="false" form="prefix">(</mo><mi>w</mi><mo stretchy="false" form="postfix">)</mo><mo>−</mo><msup><mover><mi>κ</mi><mo accent="true">̂</mo></mover><mi>T</mi></msup><mo stretchy="false" form="prefix">(</mo><mi>a</mi><mo>⊙</mo><mover><mi>κ</mi><mo accent="true">̂</mo></mover><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">G = \mathrm{diag}(w) - \hat\kappa^T(a \odot \hat\kappa)</annotation></semantics></math> 是「对角+秩一」，谱半径没有小于 1 的下界（<code>w≈1, a≈1</code> 时可有 N−1 个特征值恰为 1）。</li>
+<li>不能把 40.21% 说成「与官方数字对齐」——源文档里<strong>没有</strong> rc2-172m-pile 的官方 LAMBADA 参考值（未记录）。</li>
+</ol>
+<p><strong>对后续决策的含义</strong>：这条线仍然值得做，但顺序必须反过来——先跑 P0（TF-IDF 价值底线）、再跑 P1/P2（hidden vs state 对照），只有出现正信号才碰 <code>e_t</code> 与 router。S0 的天花板（teacher 标签一致率）必须先测，否则探针 accuracy 的上下限都不可解释。</p>
+<h2 id="踩坑与修正">5. 踩坑与修正</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>现象</th>
+<th>根因</th>
+<th>解法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>论文式与官方代码符号不一致（一处 <code>−</code>，一处 <code>+</code>）</td>
+<td>代码把减号折进了 <code>ab = (−kk)ᵀ(kk·a)</code>；而 wiki 上直接写成 <code>+</code></td>
+<td>权威序取论文 Eq.17；已做数值验证：论文式与代码式在 fp64 下 <code>max|Δ| = 1.8e-15</code></td>
+</tr>
+<tr>
+<td>照抄公式得到转置的 state</td>
+<td>论文明确说 wkv 相对 RWKV-5/6 <strong>被转置</strong>以对齐代码</td>
+<td>按 <code>[B,H,i,j]</code>（<code>i</code>=receptive、<code>j</code>=key）约定写全部 einsum</td>
+</tr>
+<tr>
+<td>加载直接报 bf16 相关错误/退化</td>
+<td>ckpt dtype 是 <strong>bfloat16</strong>，1080 Ti 不支持</td>
+<td>加载时统一 upcast 到 float32（探针阶段固定并报告 dtype）</td>
+</tr>
+<tr>
+<td><code>load_state_dict(strict=True)</code> 报 key 对不上</td>
+<td>工作树里的 <code>rwkv_v7_demo.py</code> 是 rc2 之后的重命名版本</td>
+<td>权重的定义版本在 git 历史（<code>time_aaaaa</code> 在 rc2 提交里存在），loader 按 ckpt key 命名 ⇒ strict 通过</td>
+</tr>
+<tr>
+<td><code>time_faaaa</code> 形状不匹配</td>
+<td>ckpt 里是 <code>(1,1,768)</code>，模块要 <code>(12,64)</code>（numel 相同）</td>
+<td>唯一一处 shape fix-up：<code>reshape(-1, 64)</code></td>
+</tr>
+<tr>
+<td><code>head_size</code> 无法从 ckpt 恢复</td>
+<td>它是 demo 里硬编码的常量（注释 <em>don’t change</em>）</td>
+<td>暴露成 <code>load_x070(..., head_size=64)</code>，不猜</td>
+</tr>
+<tr>
+<td>tokenizer 用错、生成全是乱码</td>
+<td>用的是 World 的 65536 词表，模型是 Pile 的 50277/50304</td>
+<td>换成 <code>20B_tokenizer.json</code></td>
+</tr>
+<tr>
+<td><code>kk</code> 归一化的范围不确定（整条 C 向量 vs 每头）</td>
+<td>rc2 是 <code>F.normalize(kk, p=2)</code> 整条；后续版本改成 per-head</td>
+<td>默认 <code>kk_norm_mode="full"</code>，保留 <code>"head"</code> 供对照；实测只有 <code>full</code> 能生成连贯文本</td>
+</tr>
+<tr>
+<td>自检里 R3 一跑就 <code>RuntimeError</code></td>
+<td>einsum 少一维（<code>bhkij</code> 写成缺一维）</td>
+<td>修维度；自检的价值正在于此</td>
+</tr>
+<tr>
+<td>自检判据无区分度（R1 0.9789 vs R2 0.9805）</td>
+<td>用「每头秩二」当场景，秩一近似就能捞到 0.98</td>
+<td>换成覆盖自适应性与秩的两场景</td>
+</tr>
+<tr>
+<td><code>rsync</code> 同步 harness 到工作机失败</td>
+<td>该机 rsync 协议不兼容</td>
+<td>改用 <code>tar czf - . \| ssh ... tar xzf -</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="未做-下一步">6. 未做 / 下一步</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>未做</th>
+<th>原因 / 成本</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>S2 主实验</strong>（真权重 <code>S_T</code>/<code>r_T</code> → R0/R1/R2/R3 对比）</td>
+<td>只到合成自检；前置是 <code>S_T</code>/<code>r_T</code> 特征落盘与 P0 基线</td>
+</tr>
+<tr>
+<td>P0（TF-IDF+LR）与 P1/P2 臂</td>
+<td>未跑，但成本最低、判决力最强</td>
+</tr>
+<tr>
+<td>S3 层/头分解</td>
+<td>依赖 S2</td>
+</tr>
+<tr>
+<td>S4 动态特征 <code>e_t</code>（逐 token，需 RNN 模式或 chunk 边界）</td>
+<td>依赖 S1/S2</td>
+</tr>
+<tr>
+<td>S0 反事实路由标签 <code>retrieve = 1[cheap_correct = 0]</code></td>
+<td>需 <code>strong_pass_rate</code> 数据池</td>
+</tr>
+<tr>
+<td>多种子 + 方差 + 去偏 ECE</td>
+<td>自检单种子；ECE 去偏未实现（已在返回值标注）</td>
+</tr>
+<tr>
+<td><code>verify_readout.py</code> 的逐层 <code>S@r</code> 对照输出</td>
+<td>脚本已写，<strong>产物未落盘</strong>（无记录数字）</td>
+</tr>
+<tr>
+<td><code>rwkv7_jev_proto.py</code>（修正版原型骨架）</td>
+<td><strong>未执行</strong>，只过 <code>py_compile</code>（本机 python 无 torch）</td>
+</tr>
+</tbody>
+</table>
+<p>下一步的性价比排序：① 补 P0 与标签天花板（CPU 即可）；② 同一 harness 跑 hidden 与 state 的对照（&lt; 1 GPU 小时）；③ 只有出现正信号才做 <code>e_t</code> 与 S3 层分解。另需注意：状态抽取在这台机器上不是瓶颈（同机另一实现 162.2 M 退化 RWKV-7 实测前向 5,075 tok/s，10k prompt ≈ 17 min；172M 权重每样本 fp32 状态 192 KB ⇒ 10k ≈ 1.9 GB，换 0.4B 则按规划为 3.24 MB/样本 ⇒ 32 GB），真正的瓶颈是<strong>判决顺序</strong>而不是算力。</p>
+<h2 id="证据与产物">7. 证据与产物</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>路径（相对 <code>autodl/</code>）</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>RWKV7-JEV-REVIEW.md</code></td>
+<td>原案评审：§2 公式推演、§3 外部事实核查、§4 逐节勘误（24 行）、§5 修正路线</td>
+</tr>
+<tr>
+<td><code>RWKV7-PROBE-PLAN.md</code></td>
+<td>读路径探针计划：四族读数、六臂、kill criteria、S0–S4 排期</td>
+</tr>
+<tr>
+<td><code>rwkv7_sizes.py</code></td>
+<td>state / Adapter 预算计算器（纯标准库，已跑通，对账论文 Appendix E.2）</td>
+</tr>
+<tr>
+<td><code>rwkv7_jev_proto.py</code></td>
+<td>修正版原型骨架（未执行，仅 <code>py_compile</code>）</td>
+</tr>
+<tr>
+<td><code>rwkv7-probe/README.md</code></td>
+<td>loader 设计、Pascal 约束、API、复现命令</td>
+</tr>
+<tr>
+<td><code>rwkv7-probe/x070_loader.py</code></td>
+<td>纯 PyTorch 模型定义 + 严格加载 + <code>forward_states</code> / <code>rnn_step</code></td>
+</tr>
+<tr>
+<td><code>rwkv7-probe/smoke_output.txt</code></td>
+<td>端到端原始输出：加载统计、逐层 <code>S</code> 统计、贪心文本、吞吐、交叉校验</td>
+</tr>
+<tr>
+<td><code>rwkv7-probe/lambada_eval.py</code> / <code>lambada_output.txt</code></td>
+<td>LAMBADA 全量客观评分（n=5153，ppl 20.4244 / acc 40.21%）</td>
+</tr>
+<tr>
+<td><code>rwkv7-probe/verify_readout.py</code></td>
+<td>逐层 <code>S@r</code> 与 kernel <code>y_last</code> 的对照脚本（输出未落盘）</td>
+</tr>
+<tr>
+<td><code>probe/README.md</code></td>
+<td>六臂 harness 说明 + 合成自检表 + 已知局限</td>
+</tr>
+<tr>
+<td><code>probe/readouts.py</code> / <code>metrics.py</code> / <code>fit.py</code></td>
+<td>R0–R3 读数、带 bootstrap CI 的指标、单臂训练/评测 harness</td>
+</tr>
+<tr>
+<td><code>probe/smoke.py</code></td>
+<td>合成信号自检（两场景 + Z 注入 + 判据反例的文档字符串）</td>
+</tr>
+<tr>
+<td><code>PROGRESS.md</code>（2026-10-08 条目）</td>
+<td>工作机硬件/算力实测、bf16 坑、状态抽取算力换算</td>
+</tr>
+</tbody>
+</table>
+
+</article>
+<nav class="post-nav"><a href="03-tqr-jev-assets.html"><span class="dir">← 上一篇</span>TQR-JEV 资产准备：模型能跑、增殖能出样本，但 1k 与三原语头没做</a><a class="next" href="05-prompt-jev.html"><span class="dir">下一篇 →</span>prompt-based JEV pilot：冻结 LM 的答案位置比它自己的嘴多知道什么</a></nav>
+</main>
+<footer class="site-footer"><div class="inner">
+<span>MadAIKid · 实验日志</span>
+<span>构建 2026-11-17 22:09</span>
+<span>源文件即 Markdown，站内无 JS 依赖</span>
+</div></footer>
+</body>
+</html>

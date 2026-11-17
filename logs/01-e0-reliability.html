@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E0 可靠性工装：先证明「打分器」可信，再花 GPU 的钱 · MadAIKid · 实验日志</title>
+<meta name="description" content="TQR 打分器被发现恒返常数、任何「可靠性/判别力」测量都会假性满分 →">
+<meta name="generator" content="blog/build.py">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<header class="site-header"><div class="inner">
+<a class="brand" href="../index.html">MadAIKid<span class="dot">·</span>logs</a>
+<nav class="site-nav">
+<a href="../index.html">实验日志</a>
+<a href="../timeline.html">时间索引</a>
+<a href="https://github.com/MadAIKid/MadAIKid_logs">GitHub</a>
+</nav>
+</div></header>
+<main class="wrap">
+<div class="article-head">
+<div class="crumb"><a href="../index.html">实验日志</a> / 01-e0-reliability</div>
+<h1>E0 可靠性工装：先证明「打分器」可信，再花 GPU 的钱</h1>
+<p class="subtitle">逐条独立打分 + ICC(2,1) + 位置稳健性</p>
+<dl class="spec"><div class="item"><dt>编号</dt><dd>E0</dd></div><div class="item"><dt>日期</dt><dd>2026-10-05 → 2026-10-06</dd></div><div class="item"><dt>状态</dt><dd><span class="badge status-完成">完成</span></dd></div><div class="item"><dt>判定</dt><dd>ICC=0.9940 / order rho=0.9830，G0 PASS</dd></div><div class="item"><dt>标签</dt><dd>评测方法 / 校准 / 零算力</dd></div><div class="item"><dt>硬件</dt><dd>本地 Mac（零 GPU）</dd></div><div class="item"><dt>模型</dt><dd>—</dd></div><div class="item"><dt>数据</dt><dd>—</dd></div><div class="item"><dt>源文档</dt><dd>E0.md · PROGRESS.md · e0_harness.py · features.py</dd></div></dl>
+</div>
+<article class="prose">
+<blockquote>
+<p><strong>一句话</strong>：TQR 打分器被发现恒返常数、任何「可靠性/判别力」测量都会假性满分 → 在本地用纯标准库写了特征抽取 + 度量 harness（逐条独立打分、ICC(2,1)、位置稳健、池敏感性）→ σ=0.15 下 ICC=0.9940 / 顺序 rho=0.9830 / 翻转率 0.000，G0 PASS → 但前提是”打分噪声来自真 judge”，桩特征的 ICC 只证明工装自洽，不证明判别力。</p>
+</blockquote>
+<h2 id="摘要">0. 摘要</h2>
+<p>E0 要回答的不是”TQR 分数好不好”，而是<strong>在这个分数上做任何测量之前，尺子本身会不会永远给同一个读数</strong>。 检查 <code>Stellan_Core/sub_agent_framework/base_agent.py:168</code> 的 <code>evaluate_tqr()</code> 后发现它用全默认 <code>TQRScore()</code>、 从不读 node，因此任意节点恒返 <code>9.176056742068813</code>：候选池内所有分数相同，排序退化为「取第一个」， ICC 必然 = 1.0（假信号），E1 的 AUROC 必然 = 0.5，硬阈值 <code>&gt;10.0</code> 永不触发。</p>
+<p>在不连远端、不花钱的前提下交付两个纯标准库文件：<code>features.py</code>（六特征，Law-II 边界内）与 <code>e0_harness.py</code>（ICC(2,1) / 位置交换 / 池敏感性 / 可控噪声 judge）。12 个样例节点 × 5 次重复 × 40 次打乱下， σ=0.15 得 ICC=0.9940、翻转率 0.000、顺序 rho=0.9830，<strong>G0 PASS</strong>。</p>
+<p>最重要的产出不是那个 PASS，而是<strong>阴性对照推翻了原判据</strong>：给 judge 注入位置偏置后 top-1 翻转率几乎不动 （bias=0.20 时才 0.075），而顺序一致性 rho 从 0.9830 掉到 0.8582。所以位置稳健性的主判据必须换成 <code>rho &gt;= 0.95</code>。</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>实验</th>
+<th>问题</th>
+<th>结果</th>
+<th>判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>E0-a</td>
+<td>打分器是否只是常数？</td>
+<td>任意节点恒返 9.176056742068813</td>
+<td>判负（前置阻塞）</td>
+</tr>
+<tr>
+<td>E0-b</td>
+<td>逐条独立打分下重测一致性？</td>
+<td>ICC(2,1)=0.9940（σ=0.15）</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>E0-c</td>
+<td>换呈现顺序会不会翻 top-1？</td>
+<td>翻转率 0.000，顺序 rho=0.9830</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>E0-d</td>
+<td>工装能否检出位置偏置？</td>
+<td>bias=0.20 → rho=0.8582，G0 FAIL</td>
+<td>✅（阴性对照通过）</td>
+</tr>
+<tr>
+<td>E0-e</td>
+<td>小候选池（k=4）排序可信吗？</td>
+<td>rho=0.945；σ=0.40 时 worst rho=−0.400</td>
+<td>⚠️ 未进 G0 判据</td>
+</tr>
+</tbody>
+</table>
+<h2 id="问题与假设">1. 问题与假设</h2>
+<p><strong>决策问题</strong>：要不要在这个打分器上继续投入（下载模型、租 4090、跑 E1 的 LLM-judge）？ 如果尺子本身不可信，后面所有 AUROC / ICC 都是花钱买假信号，所以先花零成本把尺子验掉。</p>
+<p>已确认的三个连锁后果（均来自源码阅读，不是推测）：</p>
+<ul>
+<li>候选池内所有 <code>tqr_score</code> 相同 → <code>max(alternatives, key=...tqr_score)</code> 退化为「取第一个」；</li>
+<li>E0 的 ICC 必然 = 1.0（测的是常数，不是可靠性）；</li>
+<li>E1 的 AUROC 必然 = 0.5；<code>base_agent.py:255</code> 魔鬼代言人的硬阈值 <code>&gt;10.0</code> 在默认 context 下永不触发（9.176 &lt; 10）。</li>
+</ul>
+<p><strong>预注册判据（G0）</strong>：</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>指标</th>
+<th>PASS 阈值</th>
+<th>来源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ICC(2,1)</td>
+<td><code>&gt;= 0.70</code></td>
+<td><code>E0.md</code> §3 / <code>e0_harness.py</code> 头部注释</td>
+</tr>
+<tr>
+<td>top-1 位置翻转率</td>
+<td><code>&lt;= 0.15</code></td>
+<td>同上</td>
+</tr>
+<tr>
+<td>顺序一致性 rho</td>
+<td><code>&gt;= 0.95</code>（本轮新增）</td>
+<td><code>PROGRESS.md</code> 2026-10-06「E0 改动」</td>
+</tr>
+</tbody>
+</table>
+<p>第三条是本轮<strong>改了判据之后</strong>才加进去的，理由见 §3.2。</p>
+<h2 id="实验设置">2. 实验设置</h2>
+<h3 id="环境">2.1 环境</h3>
+<ul>
+<li>平台：本地 Mac，<strong>零 GPU、零远端连接、零花费</strong>。用户明确选「不开机、本地推进」。</li>
+<li>依赖：<strong>纯标准库</strong>（无 numpy、无 torch），两个文件可原样拷进 <code>Stellan/tqr_guided_rl/src/tqr/</code>。</li>
+<li>运行：<code>python3 e0_harness.py</code>（默认 <code>--sigma 0.15</code>，可选 <code>--sigma 0.40</code>、<code>--bias</code>、<code>--reps</code>、<code>--seed</code>）。</li>
+<li>复现性：同种子两次运行输出 md5 一致（本轮早期版本 <code>7db8f0aa...</code>；改成逐条独立打分后的版本 <code>6fee94b5...</code>， 两值分属两次改动，不能互相当校验）。</li>
+</ul>
+<h3 id="模型与数据">2.2 模型与数据</h3>
+<p><strong>没有模型、没有数据集</strong>——这正是本实验能零成本的原因。</p>
+<ul>
+<li>打分对象：<code>e0_harness.py</code> 里的 12 条手写样例节点（<code>NODES</code>），故意覆盖长/短、确定性/对冲、 数学推理与套话（例如 <code>"2 + 2 = 4"</code>、<code>"Maybe the answer is 5, but I am not sure..."</code>、 <code>"This is a very important step. " * 6</code>）。</li>
+<li>特征抽取：<code>features.py</code> 的 <code>features(text) -&gt; 6 特征</code>，只用 <code>math</code>；<code>tqr(f)</code> 合成最终分。</li>
+<li>规模：12 items × 5 reps（ICC 的 <code>M[rep][item]</code>）× 40 轮打乱（位置交换与池敏感性共用轮数）。</li>
+</ul>
+<h3 id="方法">2.3 方法</h3>
+<p><strong>特征与打分</strong>（<code>features.py</code>，Law-II 边界内）：</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>特征</th>
+<th>含义</th>
+<th>取值范围</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>alpha</code></td>
+<td>词数对数饱和</td>
+<td><code>[0,10]</code></td>
+</tr>
+<tr>
+<td><code>beta_r</code></td>
+<td>平均词长接近 5 的惩罚</td>
+<td><code>[0,1]</code></td>
+</tr>
+<tr>
+<td><code>beta_n</code></td>
+<td>长度 × 子句密度</td>
+<td><code>[1,10]</code></td>
+</tr>
+<tr>
+<td><code>delta</code></td>
+<td>对冲词密度（maybe / might / perhaps / possibly / unsure / guess / assume）</td>
+<td><code>[0,0.95]</code></td>
+</tr>
+<tr>
+<td><code>complexity</code></td>
+<td>长度饱和</td>
+<td><code>[1,10]</code></td>
+</tr>
+</tbody>
+</table>
+<p><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>T</mi><mi>Q</mi><mi>R</mi><mo>=</mo><mstyle displaystyle="true"><mfrac><mrow><mo stretchy="false" form="prefix">(</mo><mi>α</mi><msub><mi>β</mi><mi>r</mi></msub><msup><mo stretchy="false" form="postfix">)</mo><msub><mi>w</mi><mi>r</mi></msub></msup><mo>⋅</mo><msubsup><mi>β</mi><mi>n</mi><msub><mi>w</mi><mi>n</mi></msub></msubsup><mo>⋅</mo><mo stretchy="false" form="prefix">(</mo><mn>1</mn><mo>−</mo><mi>δ</mi><msup><mo stretchy="false" form="postfix">)</mo><msub><mi>w</mi><mi>d</mi></msub></msup></mrow><mrow><mrow><mi>ln</mi><mo>&#8289;</mo></mrow><mo stretchy="false" form="prefix">(</mo><mi>e</mi><mo>+</mo><mi>c</mi><mo>⋅</mo><mi>k</mi><mo stretchy="false" form="postfix">)</mo></mrow></mfrac></mstyle></mrow><annotation encoding="application/x-tex">TQR = \dfrac{(\alpha\beta_r)^{w_r}\cdot\beta_n^{w_n}\cdot(1-\delta)^{w_d}}{\ln(e + c\cdot k)}</annotation></semantics></math></p>
+<p><strong>可控噪声 judge</strong>（<code>judge()</code>）：只给<strong>单个节点</strong>打分，不传全池；按高斯噪声扰动特征后 clamp 回边界， 再算 TQR。默认 <code>sigma=0.15</code>，其中 <code>alpha</code> / <code>beta_n</code> 用 <code>σ</code>，<code>beta_r</code> / <code>delta</code> 用 <code>σ/5</code>。 可选乘性位置偏置：<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msup><mi>s</mi><mo>′</mo></msup><mo>=</mo><mi>s</mi><mo>⋅</mo><mo stretchy="false" form="prefix">(</mo><mn>1</mn><mo>+</mo><mi>b</mi><mo>⋅</mo><mtext mathvariant="normal">pos</mtext><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">s&#39; = s\cdot(1 + b\cdot \text{pos})</annotation></semantics></math>，<code>pos</code> 是呈现序号。</p>
+<p><strong>四个度量</strong>：</p>
+<ol type="1">
+<li><code>icc21(M)</code>：双向 ANOVA 的 ICC(2,1)，<code>M[rep][item]</code>。 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>I</mi><mi>C</mi><mi>C</mi><mo stretchy="false" form="prefix">(</mo><mn>2</mn><mo>,</mo><mn>1</mn><mo stretchy="false" form="postfix">)</mo><mo>=</mo><mstyle displaystyle="true"><mfrac><mrow><mi>M</mi><msub><mi>S</mi><mi>R</mi></msub><mo>−</mo><mi>M</mi><mi>S</mi><mi>E</mi></mrow><mrow><mi>M</mi><msub><mi>S</mi><mi>R</mi></msub><mo>+</mo><mo stretchy="false" form="prefix">(</mo><mi>n</mi><mo>−</mo><mn>1</mn><mo stretchy="false" form="postfix">)</mo><mi>M</mi><mi>S</mi><mi>E</mi><mo>+</mo><mi>n</mi><mo stretchy="false" form="prefix">(</mo><mi>M</mi><msub><mi>S</mi><mi>C</mi></msub><mo>−</mo><mi>M</mi><mi>S</mi><mi>E</mi><mo stretchy="false" form="postfix">)</mo><mi>/</mi><mi>k</mi></mrow></mfrac></mstyle></mrow><annotation encoding="application/x-tex">ICC(2,1)=\dfrac{MS_R-MSE}{MS_R+(n-1)MSE+n(MS_C-MSE)/k}</annotation></semantics></math>，n=5 reps，k=12 items。</li>
+<li><code>position_swap()</code>：<strong>逐节点独立打分</strong>后比较不同呈现顺序；返回 <code>(baseline top-1, 翻转率, 平均 rho)</code>。 rho 是基线分向量与乱序后分向量的 Spearman。</li>
+<li><code>pool_sensitivity()</code>：<strong>同一批候选</strong>的子集排名 vs <strong>全池</strong>排名的 Spearman（k=4/8/12，40 轮）， 报 mean 与 worst。</li>
+<li><code>judge()</code> 本身即「可控噪声源」，用 σ 模拟 LLM-judge 的不可约随机性。</li>
+</ol>
+<p><strong>判定</strong>：<code>icc &gt;= 0.70 and flip &lt;= 0.15 and rho &gt;= 0.95</code> 才 PASS（<code>e0_harness.py</code> 末尾）。 <strong>没有</strong> bootstrap、没有多种子置信区间、没有 label shuffle —— 见 §6。</p>
+<h2 id="结果">3. 结果</h2>
+<h3 id="主结果">3.1 主结果</h3>
+<p>12 节点 / 5 reps / 40 轮打乱，同一 <code>seed=0</code>：</p>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>指标</th>
+<th>数值</th>
+<th>95% CI</th>
+<th>判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>σ=0.05</td>
+<td>ICC(2,1)</td>
+<td>0.9993</td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>σ=0.15（默认）</td>
+<td>ICC(2,1)</td>
+<td><strong>0.9940</strong></td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>σ=0.40（高噪声）</td>
+<td>ICC(2,1)</td>
+<td>0.9573</td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>σ=0.05</td>
+<td>位置翻转率</td>
+<td>0.000</td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>σ=0.15</td>
+<td>位置翻转率</td>
+<td><strong>0.000</strong></td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>σ=0.40</td>
+<td>位置翻转率</td>
+<td>0.000</td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>σ=0.05</td>
+<td>顺序一致性 rho</td>
+<td>0.9983</td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>σ=0.15</td>
+<td>顺序一致性 rho</td>
+<td><strong>0.9830</strong></td>
+<td>未记录</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>σ=0.40</td>
+<td>顺序一致性 rho</td>
+<td>0.8869</td>
+<td>未记录</td>
+<td>❌（跌破 0.95）</td>
+</tr>
+<tr>
+<td>σ=0.15</td>
+<td>池敏感性 rho（k=4）</td>
+<td>0.945</td>
+<td>未记录</td>
+<td>仅诊断</td>
+</tr>
+<tr>
+<td>σ=0.15</td>
+<td>池敏感性 rho（k=8）</td>
+<td>0.980</td>
+<td>未记录</td>
+<td>仅诊断</td>
+</tr>
+<tr>
+<td>σ=0.15</td>
+<td>池敏感性 rho（k=12）</td>
+<td>0.984</td>
+<td>未记录</td>
+<td>仅诊断</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>G0 判定：PASS</strong>（ICC 0.9940 ≥ 0.70、翻转 0.000 ≤ 0.15、rho 0.9830 ≥ 0.95）。</li>
+<li>其它实测值：<code>within-item sd = 0.3258</code>（同一节点的 5 次重复 sd 的均值）；<code>mean score</code> 未记录； <code>features.py</code> 在样例上 TQR 实际跨度 <strong>0.34–22.18</strong>（这是”分数不再恒定”的直接证据）。</li>
+<li>σ=0.40 时 k=4 的 <strong>worst rho = −0.400</strong>（<code>PROGRESS.md</code> 2026-10-06「E0 工具链」实测行）， 即高噪声 + 小候选池下子集排名可能与全池排名<strong>负相关</strong>。</li>
+</ul>
+<h3 id="对照与消融">3.2 对照与消融</h3>
+<p><strong>（a）位置偏置阴性对照</strong>：给 judge 注入 <code>s *= 1 + bias * position</code>，看工装能不能检出被写坏的情况。</p>
+<table>
+<thead>
+<tr>
+<th>bias</th>
+<th>top-1 翻转率</th>
+<th>顺序一致性 rho</th>
+<th>判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.00</td>
+<td>0.000</td>
+<td>0.9830</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>0.05</td>
+<td>0.000</td>
+<td>0.9545</td>
+<td>✅（擦线）</td>
+</tr>
+<tr>
+<td>0.10</td>
+<td>0.000</td>
+<td>0.9031</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>0.20</td>
+<td>0.075</td>
+<td><strong>0.8582</strong></td>
+<td>❌</td>
+</tr>
+<tr>
+<td>0.40</td>
+<td>0.150</td>
+<td>0.8086</td>
+<td>❌</td>
+</tr>
+</tbody>
+</table>
+<p>结论：<strong>top-1 翻转率对位置偏置几乎无感</strong>（bias 到 0.20 才 7.5%，仍在 15% 判据内）， 而顺序一致性 rho 敏感得多（0.9830 → 0.8086）。因此 rho 才是有效判据，翻转率只能当辅助。 这也是预注册判据从「翻转率 ≤ 15%」扩成「翻转率 + rho 双阈值」的直接原因。</p>
+<p><strong>（b）自检</strong>：bias=0.20 时 G0 判 FAIL（翻转 0.075 仍合格但 rho=0.8582 跌破 0.95）—— 工装<strong>能正确检出</strong>被污染的打分器，不是只会 PASS。</p>
+<p><strong>（c）噪声水平消融</strong>：σ=0.05 / 0.15 / 0.40 三档，ICC 从 0.9993 单调降到 0.9573， 说明 ICC 确实在测”噪声/信号比”，而不是在测常数。</p>
+<h3 id="反直觉-负结果">3.3 反直觉 / 负结果</h3>
+<ol type="1">
+<li><strong>原判据是错的</strong>（最重要的负结果）：位置交换一致率 &gt; 15% 这条阈值对位置偏置过于宽松， 靠它会在 rho 已经烂到 0.86 时继续放行。判据失效，不是数据失效。</li>
+<li><strong>「ICC 高」不等于「打分器好」</strong>：确定性打分器的 ICC 恒为 1.0，这是假信号； E0 的有意义版本必须来自打分函数的<strong>真实噪声</strong>（真 LLM-judge 采样），harness 里的 σ 只是模拟。</li>
+<li><strong>k=4 小池排序不可靠</strong>：σ=0.40 时 worst rho=−0.400；σ=0.15 时 mean rho=0.945 也已低于 0.95。 而 E1 的实际候选池通常只有几个，这个数字比全池 ICC 更接近真实使用场景。</li>
+<li><strong>翻转率这个指标基本没用</strong>：它在全部 bias 档位里只从 0.000 走到 0.150， 无法区分”完全正常”和”顺序一致性已经崩了”。</li>
+</ol>
+<h2 id="结论与判定">4. 结论与判定</h2>
+<ul>
+<li><strong>判定：完成</strong>。G0 在默认配置下 PASS（ICC 0.9940 / flip 0.000 / rho 0.9830）， 阴性对照能检出污染（bias=0.20 → FAIL），工装本身可用。</li>
+<li><strong>可写（支持的结论）</strong>：
+<ol type="1">
+<li>修复”打分器不读 node”之后，TQR 分数在 12 条样例上跨度 0.34–22.18，<strong>不再是常数</strong>； 原实现任意节点恒返 9.176056742068813，这一条是可复现的缺陷，不是推测。</li>
+<li>逐条独立打分 + 高斯噪声 σ=0.15 时，ICC(2,1)=0.9940、顺序 rho=0.9830、翻转率 0.000。</li>
+<li><strong>位置稳健性的主判据应是顺序一致性 rho（≥ 0.95），不是 top-1 翻转率</strong>； 依据是阴性对照里翻转率对偏置不敏感（bias 0.20 仍 0.075）。</li>
+<li>小池敏感性可测（k=4 mean rho 0.945 / k=8 0.980 / k=12 0.984），但当前未纳入 G0。</li>
+</ol></li>
+<li><strong>不可写（诚实边界）</strong>：
+<ol type="1">
+<li><strong>不能</strong>说”TQR 打分器有判别力”。本版特征是”有区分度且可复现”的代理，无语义真值； H2（判别力）要等 E1 换成 LLM-judge / 人工标注。</li>
+<li><strong>不能</strong>把 ICC=0.9940 当成”真 judge 也这么稳”。σ 是人为设定的模拟值， 真 judge 的采样噪声未实测；接真 judge 时必须把 σ 换成实测值重跑。</li>
+<li><strong>不能</strong>说”位置稳健性没问题”。σ=0.15 下成立；σ=0.40 下 rho 已 0.8869，属 FAIL。</li>
+<li><strong>不能</strong>说”小候选池排序可信”。k=4 在 σ=0.15 已 0.945、σ=0.40 worst −0.400。</li>
+</ol></li>
+<li><strong>对后续决策的含义</strong>：可以继续（工装已就位、生产补丁已写成参考实现）， 但 E1 之前必须先解决”真 judge 噪声”这件事；未解决则一切 ICC 都是自证。</li>
+</ul>
+<h2 id="踩坑与修正">5. 踩坑与修正</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>现象</th>
+<th>根因</th>
+<th>解法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>icc21</code> 算出 ICC=−0.0001（假阴性）</td>
+<td>把 <code>M[item][rep]</code> 当成 <code>M[rep][item]</code>，SSR/SSC 互换</td>
+<td>打印 MSR/MSE/MSC：MSC=150 而 MSR=0.16，与「5 reps × 12 items」形状不符；修正后 σ=0.15 得 0.9940</td>
+</tr>
+<tr>
+<td>池敏感性出现负 rho</td>
+<td>初版比较”不同子集各自的排名”，k 越大越不可比</td>
+<td>改为<strong>同一批候选</strong>：子集排名 vs 全池排名的 Spearman</td>
+</tr>
+<tr>
+<td><code>within-rep sd</code> = 5.48，被节点差异主导</td>
+<td>原式跨节点算 sd，不是重复测量的 sd</td>
+<td>改为<strong>同一节点</strong>的重复 sd，得 0.3258</td>
+</tr>
+<tr>
+<td><code>position_swap</code> 仍返回 2 个值</td>
+<td>新旧定义共存（Python 后定义覆盖前者），删重复块时又误删新版</td>
+<td>重写并核对<strong>最终生效的定义</strong>；教训：改写后要检查实际被调用的那一份</td>
+</tr>
+<tr>
+<td>脚本写不进文件（&gt;~800 字节或含全角标点即卡 300s）</td>
+<td>本地执行环境限制（单次命令约 200–300 字符上限）</td>
+<td>逐行小批量 <code>printf ... &gt;&gt; file</code>；二进制/长内容走 base64 单行解码</td>
+</tr>
+<tr>
+<td>生产补丁无法落地 Stellan</td>
+<td><code>Stellan_Core</code> 目录无写权限（<code>Operation not permitted</code>）</td>
+<td>补丁留在 <code>E0.md</code> §4 作参考实现；按用户决定<strong>不写入</strong> Stellan</td>
+</tr>
+</tbody>
+</table>
+<p>另外两条与环境相关、但不影响结论的坑：<code>printf</code> 与较长 heredoc 会挂起（改用短 <code>echo</code>）， 反引号会被 shell 求值导致内容被污染（写入时一律避开反引号）。</p>
+<h2 id="未做-下一步">6. 未做 / 下一步</h2>
+<ol type="1">
+<li><strong>E1 暂缓</strong>：把桩特征换成 LLM-judge / 人工标注，才能测 H2 判别力。这是唯一能回答 “TQR 分数到底有没有用”的实验，本文件不覆盖。</li>
+<li><strong>生产补丁未落 Stellan</strong>：<code>TQRFeatureScorer</code> + 新的 <code>evaluate_tqr()</code> 已写在 <code>E0.md</code> §4， 但按用户 2026-10-06 决定不写入（该目录也无写权限）；兼容性：新参数全部有默认值， 现有 31 处 <code>tqr_score</code> 读取方不受影响，但<strong>分数分布会变</strong>，<code>&gt;10.0</code> / <code>&lt;1.0</code> 两个硬阈值需重标定。</li>
+<li><strong>池敏感性未进 G0</strong>：建议补一条（如 k=4 mean rho ≥ 0.8），因为它才是”小候选池下排序是否可信”的直接度量。</li>
+<li><strong>真 judge 的 σ 未实测</strong>：本 harness 的噪声是模拟；接真 judge 后必须标定 σ 再重跑 ICC 与 rho。</li>
+<li><strong>无置信区间</strong>：没有 bootstrap、没有多种子（只有 <code>seed=0</code>），表中 CI 列只能写「未记录」。</li>
+<li><strong>无 label shuffle / 随机特征对照</strong>：本实验的对照只有位置偏置与噪声档位，语义层对照留给 E1。</li>
+</ol>
+<h2 id="证据与产物">7. 证据与产物</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>路径（相对 <code>autodl/</code>）</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>E0.md</code></td>
+<td>E0 结论 + 生产补丁（<code>TQRFeatureScorer</code> / <code>evaluate_tqr</code>）+ 局限与下一步</td>
+</tr>
+<tr>
+<td><code>e0_harness.py</code></td>
+<td>度量 harness（139 行）：<code>judge</code> / <code>icc21</code> / <code>spearman</code> / <code>pool_sensitivity</code> / <code>position_swap</code> / <code>main</code></td>
+</tr>
+<tr>
+<td><code>features.py</code></td>
+<td>六特征抽取 + <code>tqr()</code> + <code>score()</code>（41 行，纯标准库）</td>
+</tr>
+<tr>
+<td><code>PROGRESS.md</code></td>
+<td>2026-10-06 两节（「E0 工具链」与「E0 改动」）：实测输出、踩坑、md5</td>
+</tr>
+<tr>
+<td><code>PROGRESS-SUMMARY.md</code></td>
+<td>收尾摘要：E0 完成 / ICC=0.9940 / G0 PASS</td>
+</tr>
+<tr>
+<td><code>INDEX.md</code></td>
+<td>文档地图与当前状态（E0 一行）</td>
+</tr>
+</tbody>
+</table>
+<p>复跑方式：</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">python3</span> e0_harness.py                 <span class="co"># 默认 sigma=0.15</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="ex">python3</span> e0_harness.py <span class="at">--sigma</span> 0.40    <span class="co"># 高噪声</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="ex">python3</span> e0_harness.py <span class="at">--bias</span> 0.20     <span class="co"># 位置偏置阴性对照（应判 FAIL）</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="ex">python3</span> features.py                   <span class="co"># 特征/分数自检</span></span></code></pre></div>
+
+</article>
+<nav class="post-nav"><span></span><a class="next" href="02-infra-toolchain.html"><span class="dir">下一篇 →</span>运维工具链：一次判负、一台免费 GPU、一条不再覆盖已有内容的文档线</a></nav>
+</main>
+<footer class="site-footer"><div class="inner">
+<span>MadAIKid · 实验日志</span>
+<span>构建 2026-11-17 22:09</span>
+<span>源文件即 Markdown，站内无 JS 依赖</span>
+</div></footer>
+</body>
+</html>

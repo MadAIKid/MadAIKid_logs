@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MadAIKid · 实验日志</title>
+<meta name="description" content="MadAIKid 的实验日志：问题、设置、结果、判定与边界。">
+<meta name="generator" content="blog/build.py">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<header class="site-header"><div class="inner">
+<a class="brand" href="index.html">MadAIKid<span class="dot">·</span>logs</a>
+<nav class="site-nav">
+<a href="index.html" class="active">实验日志</a>
+<a href="timeline.html">时间索引</a>
+<a href="https://github.com/MadAIKid/MadAIKid_logs">GitHub</a>
+</nav>
+</div></header>
+<main class="wrap">
+<section class="hero">
+<h1>实验日志</h1>
+<p class="lede">把一条条真实跑过的实验整理成可追溯的日志：<strong>问题 → 设置 → 结果 → 判定 → 边界</strong>。
+每篇都标明「可写 / 不可写」——负结果和正结果同等重要。</p>
+<div class="stats">
+<div class="stat"><div class="num">8</div><div class="lbl">篇日志</div></div>
+<div class="stat"><div class="num">21</div><div class="lbl">个标签</div></div>
+<div class="stat"><div class="num" style="font-size:1.15rem">1 · 6 · 1</div><div class="lbl">完成 · 部分完成 · 判负</div></div>
+<div class="stat"><div class="num" style="font-size:.95rem">2026-10-05 → 2026-11-16</div><div class="lbl">时间跨度</div></div>
+</div>
+<div class="filters" id="filters"><button class="chip" data-tag="*" aria-pressed="true">全部</button><button class="chip" data-tag="MTP" aria-pressed="false">MTP</button><button class="chip" data-tag="代谢" aria-pressed="false">代谢</button><button class="chip" data-tag="信息注入" aria-pressed="false">信息注入</button><button class="chip" data-tag="共振" aria-pressed="false">共振</button><button class="chip" data-tag="判负" aria-pressed="false">判负</button><button class="chip" data-tag="剪枝" aria-pressed="false">剪枝</button><button class="chip" data-tag="可解释性" aria-pressed="false">可解释性</button><button class="chip" data-tag="后训练" aria-pressed="false">后训练</button><button class="chip" data-tag="工具链" aria-pressed="false">工具链</button><button class="chip" data-tag="探针" aria-pressed="false">探针</button><button class="chip" data-tag="探针工具" aria-pressed="false">探针工具</button><button class="chip" data-tag="数据构建" aria-pressed="false">数据构建</button><button class="chip" data-tag="文档同步" aria-pressed="false">文档同步</button><button class="chip" data-tag="文献" aria-pressed="false">文献</button><button class="chip" data-tag="条件计算" aria-pressed="false">条件计算</button><button class="chip" data-tag="校准" aria-pressed="false">校准</button><button class="chip" data-tag="模型下载" aria-pressed="false">模型下载</button><button class="chip" data-tag="规模外推" aria-pressed="false">规模外推</button><button class="chip" data-tag="评测方法" aria-pressed="false">评测方法</button><button class="chip" data-tag="运维" aria-pressed="false">运维</button><button class="chip" data-tag="零算力" aria-pressed="false">零算力</button></div>
+</section>
+
+<section class="card-list" id="cards">
+<article class="card" data-tags="评测方法 校准 零算力">
+<div class="when"><span>2026-10-05</span><br><span class="yr">→ 2026-10-06</span></div>
+<div class="body">
+<h3><a href="logs/01-e0-reliability.html"><span class="id-tag">E0</span>E0 可靠性工装：先证明「打分器」可信，再花 GPU 的钱</a></h3>
+<p class="teaser">TQR 打分器被发现恒返常数、任何「可靠性/判别力」测量都会假性满分 →</p>
+<div class="meta-row"><span class="badge status-完成">完成</span><span class="badge verdict">ICC=0.9940 / order rho=0.9830，G0 PASS</span><span class="badge tag">评测方法</span><span class="badge tag">校准</span><span class="badge tag">零算力</span></div>
+</div>
+</article><article class="card" data-tags="运维 工具链 判负 文档同步">
+<div class="when"><span>2026-10-05</span><br><span class="yr">→ 2026-11-17</span></div>
+<div class="body">
+<h3><a href="logs/02-infra-toolchain.html"><span class="id-tag">INFRA</span>运维工具链：一次判负、一台免费 GPU、一条不再覆盖已有内容的文档线</a></h3>
+<p class="teaser">为了让实验能落地，先把执行面查清 —— AutoDL 实例（4090 24G / 50GB 数据盘 / 200GB 文件存储）</p>
+<div class="meta-row"><span class="badge status-部分完成">部分完成</span><span class="badge verdict">Strata 判负（26 GiB &lt; 27.6 GB）；1080 Ti 以 5,075 tok/s 承接探针，省下开机钱</span><span class="badge tag">运维</span><span class="badge tag">工具链</span><span class="badge tag">判负</span><span class="badge tag">文档同步</span></div>
+</div>
+</article><article class="card" data-tags="模型下载 数据构建 校准 运维">
+<div class="when"><span>2026-10-05</span><br><span class="yr">→ 2026-10-06</span></div>
+<div class="body">
+<h3><a href="logs/03-tqr-jev-assets.html"><span class="id-tag">TQR</span>TQR-JEV 资产准备：模型能跑、增殖能出样本，但 1k 与三原语头没做</a></h3>
+<p class="teaser">TQR-JEV 要不要继续花 GPU 钱，取决于冻结 9B 能不能跑、数学数据能不能增殖成带标签的节点样本 —— 本轮把模型（19.33 GB）、数据（859,494 行）、代码落进跨实例共享存储，9B 在 4090 上实测 18.8 GB 显存 / 23.6 tok/s，增殖脚本修到 v3 后 3 条样本 accept 100%；但 1k 放量、JEV 三原语头、RR-tree 全部未做。</p>
+<div class="meta-row"><span class="badge status-部分完成">部分完成</span><span class="badge verdict">资产就绪（9B 19.33 GB / Numina 859,494 行），v3 仅 3 条样本，1k 与 JEV 头未做</span><span class="badge tag">模型下载</span><span class="badge tag">数据构建</span><span class="badge tag">校准</span><span class="badge tag">运维</span></div>
+</div>
+</article><article class="card" data-tags="探针 探针工具 文献 判负">
+<div class="when"><span>2026-10-07</span><br><span class="yr">→ 2026-10-08</span></div>
+<div class="body">
+<h3><a href="logs/04-rwkv7-state-probe.html"><span class="id-tag">RWKV7</span>RWKV-7 矩阵状态「读路径」探针：先修公式，再证明探针工具可判</a></h3>
+<p class="teaser">原案「用 RWKV-7 的矩阵状态外挂多个 JEV-style 决策头」的骨架可做，但公式与文献定位有 24 处问题（最贵的一处是 Adapter 参数量被低估 L 倍）；本轮先把公式改对、把 Pascal 卡上的纯 PyTorch loader 与六臂读数 harness 建起来并用合成信号自检（rank1 场景 R0=0.939，fullrank 场景 R3=0.912），但真权重上的…</p>
+<div class="meta-row"><span class="badge status-部分完成">部分完成</span><span class="badge verdict">勘误 24 条；合成自检 R0=0.939、R3=0.912；真权重主实验 S2 未跑</span><span class="badge tag">探针</span><span class="badge tag">探针工具</span><span class="badge tag">文献</span><span class="badge tag">判负</span></div>
+</div>
+</article><article class="card" data-tags="探针 校准 可解释性 判负">
+<div class="when"><span>2026-10-22</span></div>
+<div class="body">
+<h3><a href="logs/05-prompt-jev.html"><span class="id-tag">PJEV</span>prompt-based JEV pilot：冻结 LM 的答案位置比它自己的嘴多知道什么</a></h3>
+<p class="teaser">在冻结的 Qwen3-1.7B-Base 上，答案提示词末位的 hT 线性可读到 0.916 acc，显著高于同监督训练的 2D logits 校准（0.822，+9.4 pt，CI [+7.6, +11.3]），差距集中在否定/比较类反事实陈述上——「readout gap」成立；但把同一探针搬到选项顺序反转的格式上只有 0.472，「格式不变的单方向判断向量」被判负，因此这条线的定位只能…</p>
+<div class="meta-row"><span class="badge status-部分完成">部分完成</span><span class="badge verdict">严格 readout gap +9.4 pt CI[+7.6,+11.3]；格式不变单方向判负</span><span class="badge tag">探针</span><span class="badge tag">校准</span><span class="badge tag">可解释性</span><span class="badge tag">判负</span></div>
+</div>
+</article><article class="card" data-tags="探针 共振 判负 后训练 评测方法">
+<div class="when"><span>2026-11-10</span><br><span class="yr">→ 2026-11-12</span></div>
+<div class="body">
+<h3><a href="logs/06-treejev-mem.html"><span class="id-tag">TREEJEV</span>TreeJev-Mem：12 条硬约束如何把「树 + 共鸣 + 标签器」逼成一个可判死的记忆层</a></h3>
+<p class="teaser">记忆的瓶颈不是编码器，而是「什么值得写、按什么顺序读、跨轮证据怎么传」；12 条来自两篇前作的硬约束把设计逼成「三级树 + 两遍门 + 锐化共鸣 + 写入端标签器」，CPU 原型三档跑通（free 0.912 / no-state 0.050），但图审的数值复核推翻了「多步共鸣」——它是负优化（cos 0.754→0.612）；J 系列最终把收益落在逐跳 meta 寻址（+26.5pt），而…</p>
+<div class="meta-row"><span class="badge status-部分完成">部分完成</span><span class="badge verdict">树 3.4k +7.5pt；多步共鸣判伪；J5 寻址 +26.5pt；端到端答案未测</span><span class="badge tag">探针</span><span class="badge tag">共振</span><span class="badge tag">判负</span><span class="badge tag">后训练</span><span class="badge tag">评测方法</span></div>
+</div>
+</article><article class="card" data-tags="剪枝 条件计算 判负 代谢 规模外推">
+<div class="when"><span>2026-11-11</span><br><span class="yr">→ 2026-11-12</span></div>
+<div class="body">
+<h3><a href="logs/07-neuron-pruning.html"><span class="id-tag">PRUNE</span>神经元级剪枝与条件计算：一个被判死的「免费 40%」</a></h3>
+<p class="teaser">把权重按「激活概率 × 能量」重排后逐步清空，在 dense 模型上静态只买到 2–3% 的免费稀疏；真正免费的是逐 token 条件性（0.5B 20–30% → 4B/7B 约 40%），但精确选中「这个 token 需要哪些神经元」必须先算完全部 gate/up——选择的成本等于省下的成本；合并、组级、路由三条替代路线逐一判负，于是这个假设在 0.5B/1.5B/4B/7B 上一致判死。</p>
+<div class="meta-row"><span class="badge status-判负">判负</span><span class="badge verdict">静态免费 2–3%、动态 oracle 20–40% 不可兑现、合并与组级均判负</span><span class="badge tag">剪枝</span><span class="badge tag">条件计算</span><span class="badge tag">判负</span><span class="badge tag">代谢</span><span class="badge tag">规模外推</span></div>
+</div>
+</article><article class="card" data-tags="MTP 共振 信息注入 探针 判负">
+<div class="when"><span>2026-11-16</span><br><span class="yr">→ 2026-11-17</span></div>
+<div class="body">
+<h3><a href="logs/08-mtp-resonance.html"><span class="id-tag">MTP</span>从「多层共振」到「局部化信息注入」：一条假设被实验逼窄的完整记录</a></h3>
+<p class="teaser">要判断「仿 capsule 的多层投票 / 解码期多层共振」这个想法值不值得投入，本线按预注册判据统计了 S0→E-7 共七轮：S0 的均匀平均层间一致性零增量（5/5 组 CI 含 0 或为负）、E-2 路径级与 E-5a token 级判负、E-1 的 +2.9pt 其实只来自倒数第二层，最终只留下一个条件性结论——局部化信息注入剖面在控制 12 维熵轨迹后对答案正确性仍有 pooled…</p>
+<div class="meta-row"><span class="badge status-部分完成">部分完成</span><span class="badge verdict">S0/E-2/E-5a 零；E-6 熵轨迹后 +0.041；E-7 +0.016 CI 含 0</span><span class="badge tag">MTP</span><span class="badge tag">共振</span><span class="badge tag">信息注入</span><span class="badge tag">探针</span><span class="badge tag">判负</span></div>
+</div>
+</article>
+</section>
+
+<p style="margin-top:2rem;font-size:.85rem;color:var(--fg-mute)">
+完整到日的索引见 <a href="timeline.html">时间索引</a>。每篇日志的源 Markdown 在
+<a href="https://github.com/MadAIKid/MadAIKid_logs/tree/main/posts">posts/</a>。
+</p>
+
+<script>
+(function () {
+  var chips = document.querySelectorAll('#filters .chip');
+  var cards = document.querySelectorAll('#cards .card');
+  chips.forEach(function (c) {
+    c.addEventListener('click', function () {
+      chips.forEach(function (x) { x.setAttribute('aria-pressed', 'false'); });
+      c.setAttribute('aria-pressed', 'true');
+      var tag = c.dataset.tag;
+      cards.forEach(function (card) {
+        var tags = (card.dataset.tags || '').split(' ');
+        card.style.display = (tag === '*' || tags.indexOf(tag) >= 0) ? '' : 'none';
+      });
+    });
+  });
+})();
+</script>
+</main>
+<footer class="site-footer"><div class="inner">
+<span>MadAIKid · 实验日志</span>
+<span>构建 2026-11-17 22:09</span>
+<span>源文件即 Markdown，站内无 JS 依赖</span>
+</div></footer>
+</body>
+</html>
